@@ -1635,6 +1635,22 @@ typedef struct BitmapIndexScanState
 	struct IndexScanDescData *biss_ScanDesc;
 } BitmapIndexScanState;
 
+typedef struct BitmapHeapScanInstrumentation
+{
+	long lossy_pages;
+	long exact_pages;
+} BitmapHeapScanInstrumentation;
+
+/* ----------------
+ *	 Shared memory container for per-worker bitmap heap scan information
+ * ----------------
+ */
+typedef struct SharedBitmapHeapScanInfo
+{
+	int                           num_workers;
+	BitmapHeapScanInstrumentation sinstrument[FLEXIBLE_ARRAY_MEMBER];
+} SharedBitmapHeapScanInfo;
+
 /* ----------------
  *	 SharedBitmapState information
  *
@@ -1677,7 +1693,8 @@ typedef struct ParallelBitmapHeapState
 	int			prefetch_target;
 	SharedBitmapState state;
 	ConditionVariable cv;
-	char		phs_snapshot_data[FLEXIBLE_ARRAY_MEMBER];
+	size_t		stats_offset;
+	char		snapshot_and_stats[FLEXIBLE_ARRAY_MEMBER];
 } ParallelBitmapHeapState;
 
 /* ----------------
@@ -1715,8 +1732,6 @@ typedef struct BitmapHeapScanState
 	int			return_empty_tuples;
 	Buffer		vmbuffer;
 	Buffer		pvmbuffer;
-	long		exact_pages;
-	long		lossy_pages;
 	TBMIterator *prefetch_iterator;
 	int			prefetch_pages;
 	int			prefetch_target;
@@ -1726,6 +1741,8 @@ typedef struct BitmapHeapScanState
 	TBMSharedIterator *shared_tbmiterator;
 	TBMSharedIterator *shared_prefetch_iterator;
 	ParallelBitmapHeapState *pstate;
+	BitmapHeapScanInstrumentation stats;
+	SharedBitmapHeapScanInfo *shared_info;
 } BitmapHeapScanState;
 
 /* ----------------
