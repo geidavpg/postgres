@@ -269,16 +269,26 @@ static int	common_prefix_cmp(const void *a, const void *b);
  * so you'd better copy that data structure if you want to plan more than once.
  *
  *****************************************************************************/
+
+extern char BUFFER[64*1024];
+
 PlannedStmt *
 planner(Query *parse, const char *query_string, int cursorOptions,
 		ParamListInfo boundParams)
 {
 	PlannedStmt *result;
 
+    strcpy(BUFFER, "digraph {\nrankdir=LR;\n");
+    
 	if (planner_hook)
 		result = (*planner_hook) (parse, query_string, cursorOptions, boundParams);
 	else
 		result = standard_planner(parse, query_string, cursorOptions, boundParams);
+    
+    strcat(BUFFER, "}\n");
+    
+    elog(WARNING, "%s", BUFFER);
+    
 	return result;
 }
 

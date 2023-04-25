@@ -418,6 +418,181 @@ set_cheapest(RelOptInfo *parent_rel)
  *
  * Returns nothing, but modifies parent_rel->pathlist.
  */
+
+const char *GetPathInfo(Path *p);
+
+char BUFFER[64*1024] = "\0";
+
+static int CNT=0;
+
+const char *GetPathInfo(Path *p)
+{
+    char buf[256];
+    char *name = NULL;
+    
+    if (nodeTag(p) == T_Path)
+    {
+        switch (p->pathtype)
+        {
+        case T_SeqScan:
+            name = "SeqScan";
+            break;
+        case T_SampleScan:
+            name = "SampleScan";
+            break;
+        case T_FunctionScan:
+            name = "FunctionScan";
+            break;
+        case T_TableFuncScan:
+            name = "TableFuncScan";
+            break;
+        case T_ValuesScan:
+            name = "ValuesScan";
+            break;
+        case T_CteScan:
+            name = "CteScan";
+            break;
+        case T_NamedTuplestoreScan:
+            name = "NamedTuplestoreScan";
+            break;
+        case T_Result:
+            name =  "Result";
+            break;
+        case T_WorkTableScan:
+            name = "WorkTableScan";
+            break;
+        default:
+            Assert(false);
+        }
+    }
+    else if (nodeTag(p) == T_IndexPath)
+        name = T_IndexOnlyScan ? "IndexOnlyScan" : "IndexScan";
+    else
+    {       
+        static char *names[] =
+        {
+            "Index",
+            "IndexClause",
+            "BitmapHeapScan",
+            "BitmapAnd",
+            "BitmapOr",
+            "Tid",
+            "TidRange",
+            "SubqueryScan",
+            "ForeignScan",
+            "CustomScan",
+            "Append", "MergeAppend", "GroupResult", "Materialize",
+                        "Memoize", "Unique", "Gather", "GatherMerge", "NestJoin",
+                        "MergeJoin", "HashJoin", "Projection", "ProjectSet",
+                        "Sort", "IncrementalSort", "Group", "UpperUnique", "Agg", "GroupingSetData",
+                         "RollupData", "GroupingSets", "MinMaxAgg", "WindowAgg", "SetOp",
+                        "RecursiveUnion", "LockRows", "ModifyTable", "Limit"};
+        
+        name = names[nodeTag(p)-T_Path-1];
+        // elog(WARNING, "%s: %d, %d, %d", name, T_BitmapHeapPath, nodeTag(p), nodeTag(p)-T_Path-1);
+    }
+   
+    
+    pg_sprintf(buf, "label=\"%s\\ntotal_cost=%f\"", name, p->total_cost);
+    CNT++;
+    return strdup(buf);
+}
+
+List * GetSubPaths(Path *path);
+List * GetSubPaths(Path *path)
+{
+    switch (nodeTag(path))
+    {
+    case T_Path:
+    case T_ForeignPath:
+    case T_TidPath:
+    case T_TidRangePath:
+    case T_IndexPath:
+    case T_GroupResultPath:
+    case T_MinMaxAggPath:
+    case T_ModifyTablePath:
+        return NULL;
+    case T_BitmapHeapPath:
+        return list_make1(castNode(BitmapHeapPath, path)->bitmapqual);
+    case T_SubqueryScanPath:
+        return list_make1(castNode(SubqueryScanPath, path)->subpath);
+    case T_MaterialPath:
+        return list_make1(castNode(MaterialPath, path)->subpath);
+    case T_MemoizePath:
+        return list_make1(castNode(MemoizePath, path)->subpath);
+    case T_UniquePath:
+        return list_make1(castNode(UniquePath, path)->subpath);
+    case T_GatherPath:
+        return list_make1(castNode(GatherPath, path)->subpath);
+    case T_GatherMergePath:
+        return list_make1(castNode(GatherMergePath, path)->subpath);
+    case T_ProjectionPath:
+        return list_make1(castNode(ProjectionPath, path)->subpath);
+    case T_ProjectSetPath:
+        return list_make1(castNode(ProjectSetPath, path)->subpath);
+        // Relevant parts of 'SortPath' and 'IncrementalSortPath' are identical
+    case T_IncrementalSortPath:
+    case T_SortPath:
+        return list_make1(((SortPath *)path)->subpath);
+    case T_GroupPath:
+        return list_make1(castNode(GroupPath, path)->subpath);
+    case T_UpperUniquePath:
+        return list_make1(castNode(UpperUniquePath, path)->subpath);
+    case T_AggPath:
+        return list_make1(castNode(AggPath, path)->subpath);
+    case T_GroupingSetsPath:
+        return list_make1(castNode(GroupingSetsPath, path)->subpath);
+    case T_WindowAggPath:
+        return list_make1(castNode(WindowAggPath, path)->subpath);
+    case T_SetOpPath:
+        return list_make1(castNode(SetOpPath, path)->subpath);
+    case T_LockRowsPath:
+        return list_make1(castNode(LockRowsPath, path)->subpath);
+    case T_LimitPath:
+        return list_make1(castNode(LimitPath, path)->subpath);
+    // Relevant parts of 'AppendPath' and 'MergeAppendPath' are identical
+    case T_AppendPath:
+    case T_MergeAppendPath:
+        return ((AppendPath *)path)->subpaths;
+    case T_NestPath:
+    case T_MergePath:
+    case T_HashPath:
+        return list_make2(((JoinPath *)path)->outerjoinpath,
+                          ((JoinPath *)path)->innerjoinpath);
+    case T_RecursiveUnionPath:
+        return list_make2(((RecursiveUnionPath *)path)->leftpath,
+                          ((RecursiveUnionPath *)path)->rightpath);
+    case T_CustomPath:
+        return castNode(CustomPath, path)->custom_paths;
+    // Relevant parts of 'T_BitmapAndPath' and 'T_BitmapOrPath' are identical
+    case T_BitmapAndPath:
+    case T_BitmapOrPath:
+        return ((BitmapAndPath *)path)->bitmapquals;
+    default:
+        Assert(false);
+        return NIL;
+    }
+}
+
+List *PATHS = NIL;
+
+int GetPathId(Path *p);
+int GetPathId(Path *p)
+{
+    int i;
+    for (i=list_length(PATHS)-1; i>=0; i--)
+    {
+        Path *pl = (Path *)PATHS->elements[i].ptr_value;
+        if (p == pl)
+        {
+            return i;
+        }
+    }
+    
+    Assert(false);
+    return -1;
+}
+
 void
 add_path(RelOptInfo *parent_rel, Path *new_path)
 {
@@ -425,7 +600,31 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
 	int			insert_at = 0;	/* where to insert new item */
 	List	   *new_path_pathkeys;
 	ListCell   *p1;
+    int i;
+    List *subPaths = GetSubPaths(new_path);
+    char * relOptKindStrs[] = {"base", "join", "other_member_rel",
+                             "other_join_rel", "upper_rel", "other_upper_rel"};
 
+    char aaa[100];
+    
+    
+    PATHS = lappend(PATHS, new_path);
+    
+    pg_sprintf(aaa, "subgraph cluster_%p{\n  label=\"kind=%s\"\n", parent_rel,
+               relOptKindStrs[parent_rel->reloptkind]);
+    strcat(BUFFER, aaa);
+    
+    pg_sprintf(aaa, "  n_%d [%s];\n", GetPathId(new_path), GetPathInfo(new_path));
+    strcat(BUFFER, aaa);
+    
+    for (i=0; i<list_length(subPaths); i++)
+    {
+        Path *subPath = (Path *)subPaths->elements[i].ptr_value;
+        pg_sprintf(aaa, "  n_%d -> n_%d;\n", GetPathId(new_path), GetPathId(subPath));
+        strcat(BUFFER, aaa);
+    }
+   
+    
 	/*
 	 * This is a convenient place to check for query cancel --- no part of the
 	 * planner goes very long without calling add_path().
@@ -578,12 +777,15 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
 				}
 			}
 		}
-
+        
 		/*
 		 * Remove current element from pathlist if dominated by new.
 		 */
 		if (remove_old)
 		{
+            pg_sprintf(aaa, "  n_%d [style=filled, fillcolor=red];\n", GetPathId(old_path));
+            strcat(BUFFER, aaa);
+            
 			parent_rel->pathlist = foreach_delete_current(parent_rel->pathlist,
 														  p1);
 
@@ -617,10 +819,15 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
 	}
 	else
 	{
+        pg_sprintf(aaa, "  n_%d [style=filled, fillcolor=red];\n", GetPathId(new_path));
+        strcat(BUFFER, aaa);
+        
 		/* Reject and recycle the new path */
 		if (!IsA(new_path, IndexPath))
 			pfree(new_path);
 	}
+    
+    strcat(BUFFER, "}\n");
 }
 
 /*
