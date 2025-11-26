@@ -1759,8 +1759,7 @@ generate_series_step_numeric(PG_FUNCTION_ARGS)
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
 		/* allocate memory for user context */
-		fctx = (generate_series_numeric_fctx *)
-			palloc(sizeof(generate_series_numeric_fctx));
+		fctx = palloc_object(generate_series_numeric_fctx);
 
 		/*
 		 * Use fctx to keep state from call to call. Seed current with the

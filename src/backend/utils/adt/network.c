@@ -196,7 +196,7 @@ network_recv(StringInfo buf, bool is_cidr)
 				i;
 
 	/* make sure any unused bits in a CIDR value are zeroed */
-	addr = (inet *) palloc0(sizeof(inet));
+	addr = palloc0_object(inet);
 
 	ip_family(addr) = pq_getmsgbyte(buf);
 	if (ip_family(addr) != PGSQL_AF_INET &&
@@ -363,7 +363,7 @@ cidr_set_masklen(PG_FUNCTION_ARGS)
 inet *
 cidr_set_masklen_internal(const inet *src, int bits)
 {
-	inet	   *dst = (inet *) palloc0(sizeof(inet));
+	inet	   *dst = palloc0_object(inet);
 
 	ip_family(dst) = ip_family(src);
 	ip_bits(dst) = bits;

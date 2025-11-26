@@ -108,7 +108,7 @@ gbt_uuid_compress(PG_FUNCTION_ARGS)
 		char	   *r = (char *) palloc(2 * UUID_LEN);
 		pg_uuid_t  *key = DatumGetUUIDP(entry->key);
 
-		retval = palloc(sizeof(GISTENTRY));
+		retval = palloc_object(GISTENTRY);
 
 		memcpy(r, key, UUID_LEN);
 		memcpy(r + UUID_LEN, key, UUID_LEN);
@@ -157,7 +157,7 @@ Datum
 gbt_uuid_union(PG_FUNCTION_ARGS)
 {
 	GistEntryVector *entryvec = (GistEntryVector *) PG_GETARG_POINTER(0);
-	void	   *out = palloc(sizeof(uuidKEY));
+	void	   *out = palloc_object(uuidKEY);
 
 	*(int *) PG_GETARG_POINTER(1) = sizeof(uuidKEY);
 	PG_RETURN_POINTER(gbt_num_union(out, entryvec, &tinfo, fcinfo->flinfo));

@@ -150,7 +150,7 @@ gbt_intv_compress(PG_FUNCTION_ARGS)
 	{
 		char	   *r = (char *) palloc(2 * INTERVALSIZE);
 
-		retval = palloc(sizeof(GISTENTRY));
+		retval = palloc_object(GISTENTRY);
 
 		if (entry->leafkey)
 		{
@@ -190,10 +190,10 @@ gbt_intv_decompress(PG_FUNCTION_ARGS)
 
 	if (INTERVALSIZE != sizeof(Interval))
 	{
-		intvKEY    *r = palloc(sizeof(intvKEY));
+		intvKEY    *r = palloc_object(intvKEY);
 		char	   *key = DatumGetPointer(entry->key);
 
-		retval = palloc(sizeof(GISTENTRY));
+		retval = palloc_object(GISTENTRY);
 		memcpy(&r->lower, key, INTERVALSIZE);
 		memcpy(&r->upper, key + INTERVALSIZE, INTERVALSIZE);
 
@@ -250,7 +250,7 @@ Datum
 gbt_intv_union(PG_FUNCTION_ARGS)
 {
 	GistEntryVector *entryvec = (GistEntryVector *) PG_GETARG_POINTER(0);
-	void	   *out = palloc(sizeof(intvKEY));
+	void	   *out = palloc_object(intvKEY);
 
 	*(int *) PG_GETARG_POINTER(1) = sizeof(intvKEY);
 	PG_RETURN_POINTER(gbt_num_union(out, entryvec, &tinfo, fcinfo->flinfo));

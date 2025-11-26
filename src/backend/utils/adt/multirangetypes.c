@@ -2818,7 +2818,7 @@ multirange_unnest(PG_FUNCTION_ARGS)
 		mr = PG_GETARG_MULTIRANGE_P(0);
 
 		/* allocate memory for user context */
-		fctx = (multirange_unnest_fctx *) palloc(sizeof(multirange_unnest_fctx));
+		fctx = palloc_object(multirange_unnest_fctx);
 
 		/* initialize state */
 		fctx->mr = mr;

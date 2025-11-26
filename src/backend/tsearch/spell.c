@@ -1991,7 +1991,7 @@ NISortAffixes(IspellDict *Conf)
 	/* Store compound affixes in the Conf->CompoundAffix array */
 	if (Conf->naffixes > 1)
 		qsort(Conf->Affix, Conf->naffixes, sizeof(AFFIX), cmpaffix);
-	Conf->CompoundAffix = ptr = (CMPDAffix *) palloc(sizeof(CMPDAffix) * Conf->naffixes);
+	Conf->CompoundAffix = ptr = palloc_array(CMPDAffix, Conf->naffixes);
 	ptr->affix = NULL;
 
 	for (i = 0; i < Conf->naffixes; i++)
@@ -2340,7 +2340,7 @@ CheckCompoundAffixes(CMPDAffix **ptr, const char *word, int len, bool CheckInPla
 static SplitVar *
 CopyVar(SplitVar *s, int makedup)
 {
-	SplitVar   *v = (SplitVar *) palloc(sizeof(SplitVar));
+	SplitVar   *v = palloc_object(SplitVar);
 
 	v->next = NULL;
 	if (s)
@@ -2348,7 +2348,7 @@ CopyVar(SplitVar *s, int makedup)
 		int			i;
 
 		v->lenstem = s->lenstem;
-		v->stem = (char **) palloc(sizeof(char *) * v->lenstem);
+		v->stem = palloc_array(char *, v->lenstem);
 		v->nstem = s->nstem;
 		for (i = 0; i < s->nstem; i++)
 			v->stem[i] = (makedup) ? pstrdup(s->stem[i]) : s->stem[i];
@@ -2356,7 +2356,7 @@ CopyVar(SplitVar *s, int makedup)
 	else
 	{
 		v->lenstem = 16;
-		v->stem = (char **) palloc(sizeof(char *) * v->lenstem);
+		v->stem = palloc_array(char *, v->lenstem);
 		v->nstem = 0;
 	}
 	return v;

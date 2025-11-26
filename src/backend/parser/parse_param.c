@@ -68,7 +68,7 @@ void
 setup_parse_fixed_parameters(ParseState *pstate,
 							 const Oid *paramTypes, int numParams)
 {
-	FixedParamState *parstate = palloc(sizeof(FixedParamState));
+	FixedParamState *parstate = palloc_object(FixedParamState);
 
 	parstate->paramTypes = paramTypes;
 	parstate->numParams = numParams;

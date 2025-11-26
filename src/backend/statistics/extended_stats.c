@@ -532,7 +532,7 @@ examine_attribute(Node *expr)
 	/*
 	 * Create the VacAttrStats struct.
 	 */
-	stats = (VacAttrStats *) palloc0(sizeof(VacAttrStats));
+	stats = palloc0_object(VacAttrStats);
 	stats->attstattarget = -1;
 
 	/*
@@ -613,7 +613,7 @@ examine_expression(Node *expr, int stattarget)
 	/*
 	 * Create the VacAttrStats struct.
 	 */
-	stats = (VacAttrStats *) palloc0(sizeof(VacAttrStats));
+	stats = palloc0_object(VacAttrStats);
 
 	/*
 	 * We can't have statistics target specified for the expression, so we

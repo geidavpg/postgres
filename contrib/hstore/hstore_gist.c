@@ -175,7 +175,7 @@ ghstore_compress(PG_FUNCTION_ARGS)
 			}
 		}
 
-		retval = (GISTENTRY *) palloc(sizeof(GISTENTRY));
+		retval = palloc_object(GISTENTRY);
 		gistentryinit(*retval, PointerGetDatum(res),
 					  entry->rel, entry->page,
 					  entry->offset,
@@ -195,7 +195,7 @@ ghstore_compress(PG_FUNCTION_ARGS)
 
 		res = ghstore_alloc(true, siglen, NULL);
 
-		retval = (GISTENTRY *) palloc(sizeof(GISTENTRY));
+		retval = palloc_object(GISTENTRY);
 		gistentryinit(*retval, PointerGetDatum(res),
 					  entry->rel, entry->page,
 					  entry->offset,

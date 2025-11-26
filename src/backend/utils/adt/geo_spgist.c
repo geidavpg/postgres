@@ -156,7 +156,7 @@ getQuadrant(BOX *centroid, BOX *inBox)
 static RangeBox *
 getRangeBox(BOX *box)
 {
-	RangeBox   *range_box = (RangeBox *) palloc(sizeof(RangeBox));
+	RangeBox   *range_box = palloc_object(RangeBox);
 
 	range_box->left.low = box->low.x;
 	range_box->left.high = box->high.x;
@@ -176,7 +176,7 @@ getRangeBox(BOX *box)
 static RectBox *
 initRectBox(void)
 {
-	RectBox    *rect_box = (RectBox *) palloc(sizeof(RectBox));
+	RectBox    *rect_box = palloc_object(RectBox);
 	float8		infinity = get_float8_infinity();
 
 	rect_box->range_box_x.left.low = -infinity;
@@ -204,7 +204,7 @@ initRectBox(void)
 static RectBox *
 nextRectBox(RectBox *rect_box, RangeBox *centroid, uint8 quadrant)
 {
-	RectBox    *next_rect_box = (RectBox *) palloc(sizeof(RectBox));
+	RectBox    *next_rect_box = palloc_object(RectBox);
 
 	memcpy(next_rect_box, rect_box, sizeof(RectBox));
 
@@ -878,7 +878,7 @@ spg_poly_quad_compress(PG_FUNCTION_ARGS)
 	POLYGON    *polygon = PG_GETARG_POLYGON_P(0);
 	BOX		   *box;
 
-	box = (BOX *) palloc(sizeof(BOX));
+	box = palloc_object(BOX);
 	*box = polygon->boundbox;
 
 	PG_RETURN_BOX_P(box);

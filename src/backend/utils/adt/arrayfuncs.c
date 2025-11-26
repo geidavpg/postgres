@@ -5944,7 +5944,7 @@ generate_subscripts(PG_FUNCTION_ARGS)
 		 * switch to memory context appropriate for multiple function calls
 		 */
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
-		fctx = (generate_subscripts_fctx *) palloc(sizeof(generate_subscripts_fctx));
+		fctx = palloc_object(generate_subscripts_fctx);
 
 		lb = AARR_LBOUND(v);
 		dimv = AARR_DIMS(v);
@@ -6291,7 +6291,7 @@ array_unnest(PG_FUNCTION_ARGS)
 		arr = PG_GETARG_ANY_ARRAY_P(0);
 
 		/* allocate memory for user context */
-		fctx = (array_unnest_fctx *) palloc(sizeof(array_unnest_fctx));
+		fctx = palloc_object(array_unnest_fctx);
 
 		/* initialize state */
 		array_iter_setup(&fctx->iter, arr);

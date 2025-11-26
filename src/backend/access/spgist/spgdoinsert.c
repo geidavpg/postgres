@@ -915,7 +915,7 @@ doPickSplit(Relation index, SpGistState *state,
 	 * page, we can't allocate these arrays before here.
 	 */
 	nodes = (SpGistNodeTuple *) palloc(sizeof(SpGistNodeTuple) * out.nNodes);
-	leafSizes = (int *) palloc0(sizeof(int) * out.nNodes);
+	leafSizes = palloc0_array(int, out.nNodes);
 
 	/*
 	 * Form nodes of inner tuple and inner tuple itself

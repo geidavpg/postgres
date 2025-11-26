@@ -279,11 +279,11 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			info->ncolumns = ncolumns = index->indnatts;
 			info->nkeycolumns = nkeycolumns = index->indnkeyatts;
 
-			info->indexkeys = (int *) palloc(sizeof(int) * ncolumns);
-			info->indexcollations = (Oid *) palloc(sizeof(Oid) * nkeycolumns);
-			info->opfamily = (Oid *) palloc(sizeof(Oid) * nkeycolumns);
-			info->opcintype = (Oid *) palloc(sizeof(Oid) * nkeycolumns);
-			info->canreturn = (bool *) palloc(sizeof(bool) * ncolumns);
+			info->indexkeys = palloc_array(int, ncolumns);
+			info->indexcollations = palloc_array(Oid, nkeycolumns);
+			info->opfamily = palloc_array(Oid, nkeycolumns);
+			info->opcintype = palloc_array(Oid, nkeycolumns);
+			info->canreturn = palloc_array(bool, ncolumns);
 
 			for (i = 0; i < ncolumns; i++)
 			{
@@ -336,8 +336,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 					Assert(amroutine->amcanorder);
 
 					info->sortopfamily = info->opfamily;
-					info->reverse_sort = (bool *) palloc(sizeof(bool) * nkeycolumns);
-					info->nulls_first = (bool *) palloc(sizeof(bool) * nkeycolumns);
+					info->reverse_sort = palloc_array(bool, nkeycolumns);
+					info->nulls_first = palloc_array(bool, nkeycolumns);
 
 					for (i = 0; i < nkeycolumns; i++)
 					{
@@ -356,13 +356,13 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 					 * order, this is a sufficient test.
 					 *
 					 * XXX This method is rather slow and complicated.  It'd
-					 * be better to have a way to explicitly declare the
-					 * corresponding btree opfamily for each opfamily of the
-					 * other index type.
+					* be better to have a way to explicitly declare the
+					* corresponding btree opfamily for each opfamily of the
+					* other index type.
 					 */
-					info->sortopfamily = (Oid *) palloc(sizeof(Oid) * nkeycolumns);
-					info->reverse_sort = (bool *) palloc(sizeof(bool) * nkeycolumns);
-					info->nulls_first = (bool *) palloc(sizeof(bool) * nkeycolumns);
+					info->sortopfamily = palloc_array(Oid, nkeycolumns);
+					info->reverse_sort = palloc_array(bool, nkeycolumns);
+					info->nulls_first = palloc_array(bool, nkeycolumns);
 
 					for (i = 0; i < nkeycolumns; i++)
 					{
@@ -2653,28 +2653,27 @@ find_partition_scheme(PlannerInfo *root, Relation relation)
 	part_scheme->strategy = partkey->strategy;
 	part_scheme->partnatts = partkey->partnatts;
 
-	part_scheme->partopfamily = (Oid *) palloc(sizeof(Oid) * partnatts);
+	part_scheme->partopfamily = palloc_array(Oid, partnatts);
 	memcpy(part_scheme->partopfamily, partkey->partopfamily,
 		   sizeof(Oid) * partnatts);
 
-	part_scheme->partopcintype = (Oid *) palloc(sizeof(Oid) * partnatts);
+	part_scheme->partopcintype = palloc_array(Oid, partnatts);
 	memcpy(part_scheme->partopcintype, partkey->partopcintype,
 		   sizeof(Oid) * partnatts);
 
-	part_scheme->partcollation = (Oid *) palloc(sizeof(Oid) * partnatts);
+	part_scheme->partcollation = palloc_array(Oid, partnatts);
 	memcpy(part_scheme->partcollation, partkey->partcollation,
 		   sizeof(Oid) * partnatts);
 
-	part_scheme->parttyplen = (int16 *) palloc(sizeof(int16) * partnatts);
+	part_scheme->parttyplen = palloc_array(int16, partnatts);
 	memcpy(part_scheme->parttyplen, partkey->parttyplen,
 		   sizeof(int16) * partnatts);
 
-	part_scheme->parttypbyval = (bool *) palloc(sizeof(bool) * partnatts);
+	part_scheme->parttypbyval = palloc_array(bool, partnatts);
 	memcpy(part_scheme->parttypbyval, partkey->parttypbyval,
 		   sizeof(bool) * partnatts);
 
-	part_scheme->partsupfunc = (FmgrInfo *)
-		palloc(sizeof(FmgrInfo) * partnatts);
+	part_scheme->partsupfunc = palloc_array(FmgrInfo, partnatts);
 	for (i = 0; i < partnatts; i++)
 		fmgr_info_copy(&part_scheme->partsupfunc[i], &partkey->partsupfunc[i],
 					   CurrentMemoryContext);
@@ -2708,7 +2707,7 @@ set_baserel_partition_key_exprs(Relation relation,
 	Assert(partkey != NULL);
 
 	partnatts = partkey->partnatts;
-	partexprs = (List **) palloc(sizeof(List *) * partnatts);
+	partexprs = palloc_array(List *, partnatts);
 	lc = list_head(partkey->partexprs);
 
 	for (cnt = 0; cnt < partnatts; cnt++)

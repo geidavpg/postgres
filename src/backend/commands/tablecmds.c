@@ -999,7 +999,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 
 			Assert(colDef->cooked_default == NULL);
 
-			rawEnt = (RawColumnDefault *) palloc(sizeof(RawColumnDefault));
+			rawEnt = palloc_object(RawColumnDefault);
 			rawEnt->attnum = attnum;
 			rawEnt->raw_default = colDef->raw_default;
 			rawEnt->generated = colDef->generated;
@@ -1009,7 +1009,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 		{
 			CookedConstraint *cooked;
 
-			cooked = (CookedConstraint *) palloc(sizeof(CookedConstraint));
+			cooked = palloc_object(CookedConstraint);
 			cooked->contype = CONSTR_DEFAULT;
 			cooked->conoid = InvalidOid;	/* until created */
 			cooked->name = NULL;
@@ -7406,7 +7406,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	{
 		RawColumnDefault *rawEnt;
 
-		rawEnt = (RawColumnDefault *) palloc(sizeof(RawColumnDefault));
+		rawEnt = palloc_object(RawColumnDefault);
 		rawEnt->attnum = attribute->attnum;
 		rawEnt->raw_default = copyObject(colDef->raw_default);
 		rawEnt->generated = colDef->generated;
@@ -8176,7 +8176,7 @@ ATExecColumnDefault(Relation rel, const char *colName,
 		/* SET DEFAULT */
 		RawColumnDefault *rawEnt;
 
-		rawEnt = (RawColumnDefault *) palloc(sizeof(RawColumnDefault));
+		rawEnt = palloc_object(RawColumnDefault);
 		rawEnt->attnum = attnum;
 		rawEnt->raw_default = newDefault;
 		rawEnt->generated = '\0';
@@ -8704,7 +8704,7 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 					  false, false);
 
 	/* Prepare to store the new expression, in the catalogs */
-	rawEnt = (RawColumnDefault *) palloc(sizeof(RawColumnDefault));
+	rawEnt = palloc_object(RawColumnDefault);
 	rawEnt->attnum = attnum;
 	rawEnt->raw_default = newExpr;
 	rawEnt->generated = attgenerated;

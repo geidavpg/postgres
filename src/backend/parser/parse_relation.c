@@ -1336,7 +1336,7 @@ buildNSItemFromTupleDesc(RangeTblEntry *rte, Index rtindex,
 	}
 
 	/* ... and build the nsitem */
-	nsitem = (ParseNamespaceItem *) palloc(sizeof(ParseNamespaceItem));
+	nsitem = palloc_object(ParseNamespaceItem);
 	nsitem->p_names = rte->eref;
 	nsitem->p_rte = rte;
 	nsitem->p_rtindex = rtindex;
@@ -1400,7 +1400,7 @@ buildNSItemFromLists(RangeTblEntry *rte, Index rtindex,
 	}
 
 	/* ... and build the nsitem */
-	nsitem = (ParseNamespaceItem *) palloc(sizeof(ParseNamespaceItem));
+	nsitem = palloc_object(ParseNamespaceItem);
 	nsitem->p_names = rte->eref;
 	nsitem->p_rte = rte;
 	nsitem->p_rtindex = rtindex;
@@ -2302,7 +2302,7 @@ addRangeTableEntryForJoin(ParseState *pstate,
 	 * Build a ParseNamespaceItem, but don't add it to the pstate's namespace
 	 * list --- caller must do that if appropriate.
 	 */
-	nsitem = (ParseNamespaceItem *) palloc(sizeof(ParseNamespaceItem));
+	nsitem = palloc_object(ParseNamespaceItem);
 	nsitem->p_names = rte->eref;
 	nsitem->p_rte = rte;
 	nsitem->p_perminfo = NULL;

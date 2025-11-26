@@ -146,7 +146,7 @@ ts_dist(PG_FUNCTION_ARGS)
 
 	if (TIMESTAMP_NOT_FINITE(a) || TIMESTAMP_NOT_FINITE(b))
 	{
-		Interval   *p = palloc(sizeof(Interval));
+		Interval   *p = palloc_object(Interval);
 
 		p->day = INT_MAX;
 		p->month = INT_MAX;
@@ -170,7 +170,7 @@ tstz_dist(PG_FUNCTION_ARGS)
 
 	if (TIMESTAMP_NOT_FINITE(a) || TIMESTAMP_NOT_FINITE(b))
 	{
-		Interval   *p = palloc(sizeof(Interval));
+		Interval   *p = palloc_object(Interval);
 
 		p->day = INT_MAX;
 		p->month = INT_MAX;
@@ -212,13 +212,13 @@ gbt_tstz_compress(PG_FUNCTION_ARGS)
 
 	if (entry->leafkey)
 	{
-		tsKEY	   *r = (tsKEY *) palloc(sizeof(tsKEY));
+		tsKEY	   *r = palloc_object(tsKEY);
 		TimestampTz ts = DatumGetTimestampTz(entry->key);
 		Timestamp	gmt;
 
 		gmt = tstz_to_ts_gmt(ts);
 
-		retval = palloc(sizeof(GISTENTRY));
+		retval = palloc_object(GISTENTRY);
 		r->lower = r->upper = gmt;
 		gistentryinit(*retval, PointerGetDatum(r),
 					  entry->rel, entry->page,
@@ -325,7 +325,7 @@ Datum
 gbt_ts_union(PG_FUNCTION_ARGS)
 {
 	GistEntryVector *entryvec = (GistEntryVector *) PG_GETARG_POINTER(0);
-	void	   *out = palloc(sizeof(tsKEY));
+	void	   *out = palloc_object(tsKEY);
 
 	*(int *) PG_GETARG_POINTER(1) = sizeof(tsKEY);
 	PG_RETURN_POINTER(gbt_num_union(out, entryvec, &tinfo, fcinfo->flinfo));

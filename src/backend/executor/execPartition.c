@@ -226,7 +226,7 @@ ExecSetupPartitionTupleRouting(EState *estate, Relation rel)
 	 * The reason for this is that a common case is for INSERT to insert a
 	 * single tuple into a partitioned table and this must be fast.
 	 */
-	proute = (PartitionTupleRouting *) palloc0(sizeof(PartitionTupleRouting));
+	proute = palloc0_object(PartitionTupleRouting);
 	proute->partition_root = rel;
 	proute->memcxt = CurrentMemoryContext;
 	/* Rest of members initialized by zeroing */
@@ -1066,10 +1066,8 @@ ExecInitRoutingInfo(ModifyTableState *mtstate,
 		if (proute->max_partitions == 0)
 		{
 			proute->max_partitions = 8;
-			proute->partitions = (ResultRelInfo **)
-				palloc(sizeof(ResultRelInfo *) * proute->max_partitions);
-			proute->is_borrowed_rel = (bool *)
-				palloc(sizeof(bool) * proute->max_partitions);
+			proute->partitions = palloc_array(ResultRelInfo *, proute->max_partitions);
+			proute->is_borrowed_rel = palloc_array(bool, proute->max_partitions);
 		}
 		else
 		{
@@ -1184,10 +1182,8 @@ ExecInitPartitionDispatchInfo(EState *estate,
 		if (proute->max_dispatch == 0)
 		{
 			proute->max_dispatch = 4;
-			proute->partition_dispatch_info = (PartitionDispatch *)
-				palloc(sizeof(PartitionDispatch) * proute->max_dispatch);
-			proute->nonleaf_partitions = (ResultRelInfo **)
-				palloc(sizeof(ResultRelInfo *) * proute->max_dispatch);
+			proute->partition_dispatch_info = palloc_array(PartitionDispatch, proute->max_dispatch);
+			proute->nonleaf_partitions = palloc_array(ResultRelInfo *, proute->max_dispatch);
 		}
 		else
 		{

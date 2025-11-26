@@ -1388,7 +1388,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 
 				/* allocate scratch memory used by all steps of AND/OR */
 				if (boolexpr->boolop != NOT_EXPR)
-					scratch.d.boolexpr.anynull = (bool *) palloc(sizeof(bool));
+					scratch.d.boolexpr.anynull = palloc_object(bool);
 
 				/*
 				 * For each argument evaluate the argument itself, then
@@ -1521,8 +1521,8 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				ReleaseTupleDesc(tupDesc);
 
 				/* create workspace for column values */
-				values = (Datum *) palloc(sizeof(Datum) * ncolumns);
-				nulls = (bool *) palloc(sizeof(bool) * ncolumns);
+				values = palloc_array(Datum, ncolumns);
+				nulls = palloc_array(bool, ncolumns);
 
 				/* create shared composite-type-lookup cache struct */
 				rowcachep = palloc(sizeof(ExprEvalRowtypeCache));
@@ -1699,8 +1699,8 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				elemstate->parent = state->parent;
 				elemstate->ext_params = state->ext_params;
 
-				elemstate->innermost_caseval = (Datum *) palloc(sizeof(Datum));
-				elemstate->innermost_casenull = (bool *) palloc(sizeof(bool));
+				elemstate->innermost_caseval = palloc_object(Datum);
+				elemstate->innermost_casenull = palloc_object(bool);
 
 				ExecInitExprRec(acoerce->elemexpr, elemstate,
 								&elemstate->resvalue, &elemstate->resnull);
@@ -1930,9 +1930,9 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				 */
 				scratch.opcode = EEOP_ARRAYEXPR;
 				scratch.d.arrayexpr.elemvalues =
-					(Datum *) palloc(sizeof(Datum) * nelems);
+					palloc_array(Datum, nelems);
 				scratch.d.arrayexpr.elemnulls =
-					(bool *) palloc(sizeof(bool) * nelems);
+					palloc_array(bool, nelems);
 				scratch.d.arrayexpr.nelems = nelems;
 
 				/* fill remaining fields of step */
@@ -2006,9 +2006,9 @@ ExecInitExprRec(Expr *node, ExprState *state,
 
 				/* space for the individual field datums */
 				scratch.d.row.elemvalues =
-					(Datum *) palloc(sizeof(Datum) * nelems);
+					palloc_array(Datum, nelems);
 				scratch.d.row.elemnulls =
-					(bool *) palloc(sizeof(bool) * nelems);
+					palloc_array(bool, nelems);
 				/* as explained above, make sure any extra columns are null */
 				memset(scratch.d.row.elemnulls, true, sizeof(bool) * nelems);
 
@@ -2262,9 +2262,9 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				scratch.opcode = EEOP_MINMAX;
 				/* allocate space to store arguments */
 				scratch.d.minmax.values =
-					(Datum *) palloc(sizeof(Datum) * nelems);
+					palloc_array(Datum, nelems);
 				scratch.d.minmax.nulls =
-					(bool *) palloc(sizeof(bool) * nelems);
+					palloc_array(bool, nelems);
 				scratch.d.minmax.nelems = nelems;
 
 				scratch.d.minmax.op = minmaxexpr->op;
@@ -2314,9 +2314,9 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				if (nnamed)
 				{
 					scratch.d.xmlexpr.named_argvalue =
-						(Datum *) palloc(sizeof(Datum) * nnamed);
+						palloc_array(Datum, nnamed);
 					scratch.d.xmlexpr.named_argnull =
-						(bool *) palloc(sizeof(bool) * nnamed);
+						palloc_array(bool, nnamed);
 				}
 				else
 				{
@@ -2327,9 +2327,9 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				if (nargs)
 				{
 					scratch.d.xmlexpr.argvalue =
-						(Datum *) palloc(sizeof(Datum) * nargs);
+						palloc_array(Datum, nargs);
 					scratch.d.xmlexpr.argnull =
-						(bool *) palloc(sizeof(bool) * nargs);
+						palloc_array(bool, nargs);
 				}
 				else
 				{
@@ -2404,9 +2404,9 @@ ExecInitExprRec(Expr *node, ExprState *state,
 					scratch.d.json_constructor.jcstate = jcstate;
 
 					jcstate->constructor = ctor;
-					jcstate->arg_values = (Datum *) palloc(sizeof(Datum) * nargs);
-					jcstate->arg_nulls = (bool *) palloc(sizeof(bool) * nargs);
-					jcstate->arg_types = (Oid *) palloc(sizeof(Oid) * nargs);
+					jcstate->arg_values = palloc_array(Datum, nargs);
+					jcstate->arg_nulls = palloc_array(bool, nargs);
+					jcstate->arg_types = palloc_array(Oid, nargs);
 					jcstate->nargs = nargs;
 
 					foreach(lc, args)
@@ -3557,8 +3557,7 @@ ExecInitCoerceToDomain(ExprEvalStep *scratch, CoerceToDomain *ctest,
 	 * during executor initialization.  That means we don't need typcache.c to
 	 * provide compiled exprs.
 	 */
-	constraint_ref = (DomainConstraintRef *)
-		palloc(sizeof(DomainConstraintRef));
+	constraint_ref = palloc_object(DomainConstraintRef);
 	InitDomainConstraintRef(ctest->resulttype,
 							constraint_ref,
 							CurrentMemoryContext,
@@ -3588,9 +3587,9 @@ ExecInitCoerceToDomain(ExprEvalStep *scratch, CoerceToDomain *ctest,
 				if (scratch->d.domaincheck.checkvalue == NULL)
 				{
 					scratch->d.domaincheck.checkvalue =
-						(Datum *) palloc(sizeof(Datum));
+						palloc_object(Datum);
 					scratch->d.domaincheck.checknull =
-						(bool *) palloc(sizeof(bool));
+						palloc_object(bool);
 				}
 
 				/*
@@ -3608,8 +3607,8 @@ ExecInitCoerceToDomain(ExprEvalStep *scratch, CoerceToDomain *ctest,
 						ExprEvalStep scratch2 = {0};
 
 						/* Yes, so make output workspace for MAKE_READONLY */
-						domainval = (Datum *) palloc(sizeof(Datum));
-						domainnull = (bool *) palloc(sizeof(bool));
+						domainval = palloc_object(Datum);
+						domainnull = palloc_object(bool);
 
 						/* Emit MAKE_READONLY */
 						scratch2.opcode = EEOP_MAKE_READONLY;
