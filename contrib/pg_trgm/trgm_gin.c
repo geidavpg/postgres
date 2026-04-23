@@ -5,8 +5,11 @@
 
 #include "access/gin.h"
 #include "access/stratnum.h"
+#include "catalog/pg_collation.h"
+#include "catalog/pg_type.h"
 #include "fmgr.h"
 #include "trgm.h"
+#include "utils/pg_locale.h"
 #include "varatt.h"
 
 PG_FUNCTION_INFO_V1(gin_extract_trgm);
@@ -14,6 +17,7 @@ PG_FUNCTION_INFO_V1(gin_extract_value_trgm);
 PG_FUNCTION_INFO_V1(gin_extract_query_trgm);
 PG_FUNCTION_INFO_V1(gin_trgm_consistent);
 PG_FUNCTION_INFO_V1(gin_trgm_triconsistent);
+PG_FUNCTION_INFO_V1(gin_compare_value_trgm);
 
 /*
  * This function can only be called if a pre-9.1 version of the GIN operator
@@ -167,6 +171,67 @@ gin_extract_query_trgm(PG_FUNCTION_ARGS)
 		*searchMode = GIN_SEARCH_MODE_ALL;
 
 	PG_RETURN_POINTER(entries);
+}
+
+/*
+ * Compare two trigram values for GIN index.
+ * This function considers the active collation when comparing trigrams,
+ * unlike btint4cmp which treats them as plain integers.
+ */
+Datum
+gin_compare_value_trgm(PG_FUNCTION_ARGS)
+{
+	int32		a = PG_GETARG_INT32(0);
+	int32		b = PG_GETARG_INT32(1);
+	Oid			collid = PG_GET_COLLATION();
+	pg_locale_t	locale = 0;
+
+	/*
+	 * If a non-default collation is specified, we need to compare the
+	 * trigrams character-by-character using the collation's rules.
+	 */
+	if (collid != DEFAULT_COLLATION_OID)
+		locale = pg_newlocale_from_collation(collid);
+
+	if (locale && locale->collate_is_c)
+		locale = 0;				/* C collation can use simple comparison */
+
+	if (locale && locale->collate)
+	{
+		/*
+		 * For non-C collations, extract the three bytes from each trigram
+		 * and compare them using the collation's comparison function.
+		 */
+		char		str_a[3];
+		char		str_b[3];
+		int			result;
+
+		/* Extract bytes from the packed integer representation */
+		str_a[0] = (a >> 16) & 0xFF;
+		str_a[1] = (a >> 8) & 0xFF;
+		str_a[2] = a & 0xFF;
+
+		str_b[0] = (b >> 16) & 0xFF;
+		str_b[1] = (b >> 8) & 0xFF;
+		str_b[2] = b & 0xFF;
+
+		/* Use collation-aware comparison */
+		result = pg_strncoll(str_a, 3, str_b, 3, locale);
+		PG_RETURN_INT32(result);
+	}
+	else
+	{
+		/*
+		 * For C collation or default collation, simple integer comparison
+		 * is sufficient and faster.
+		 */
+		if (a < b)
+			PG_RETURN_INT32(-1);
+		else if (a > b)
+			PG_RETURN_INT32(1);
+		else
+			PG_RETURN_INT32(0);
+	}
 }
 
 Datum
