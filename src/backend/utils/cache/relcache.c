@@ -1474,7 +1474,6 @@ RelationInitIndexAccessInfo(Relation relation)
 			 RelationGetRelid(relation));
 	oldcontext = MemoryContextSwitchTo(CacheMemoryContext);
 	relation->rd_indextuple = heap_copytuple(tuple);
-	relation->rd_index = (Form_pg_index) GETSTRUCT(relation->rd_indextuple);
 	MemoryContextSwitchTo(oldcontext);
 	ReleaseSysCache(tuple);
 
@@ -2347,7 +2346,7 @@ RelationReloadIndexInfo(Relation relation)
 	if (!IsSystemRelation(relation))
 	{
 		HeapTuple	tuple;
-		Form_pg_index index;
+		Form_pg_index index, rd_index;
 
 		tuple = SearchSysCache1(INDEXRELID,
 								ObjectIdGetDatum(RelationGetRelid(relation)));
@@ -2362,17 +2361,18 @@ RelationReloadIndexInfo(Relation relation)
 		 * it's not worth it to track exactly which ones they are.  None of
 		 * the array fields are allowed to change, though.
 		 */
-		relation->rd_index->indisunique = index->indisunique;
-		relation->rd_index->indnullsnotdistinct = index->indnullsnotdistinct;
-		relation->rd_index->indisprimary = index->indisprimary;
-		relation->rd_index->indisexclusion = index->indisexclusion;
-		relation->rd_index->indimmediate = index->indimmediate;
-		relation->rd_index->indisclustered = index->indisclustered;
-		relation->rd_index->indisvalid = index->indisvalid;
-		relation->rd_index->indcheckxmin = index->indcheckxmin;
-		relation->rd_index->indisready = index->indisready;
-		relation->rd_index->indislive = index->indislive;
-		relation->rd_index->indisreplident = index->indisreplident;
+		rd_index = RelationGetIndex(relation);
+		rd_index->indisunique = index->indisunique;
+		rd_index->indnullsnotdistinct = index->indnullsnotdistinct;
+		rd_index->indisprimary = index->indisprimary;
+		rd_index->indisexclusion = index->indisexclusion;
+		rd_index->indimmediate = index->indimmediate;
+		rd_index->indisclustered = index->indisclustered;
+		rd_index->indisvalid = index->indisvalid;
+		rd_index->indcheckxmin = index->indcheckxmin;
+		rd_index->indisready = index->indisready;
+		rd_index->indislive = index->indislive;
+		rd_index->indisreplident = index->indisreplident;
 
 		/* Copy xmin too, as that is needed to make sense of indcheckxmin */
 		HeapTupleHeaderSetXmin(relation->rd_indextuple->t_data,
@@ -5499,7 +5499,7 @@ restart:
 			indexPredicate = NULL;
 
 		/* Can this index be referenced by a foreign key? */
-		isKey = indexDesc->rd_index->indisunique &&
+		isKey = RelationGetIndex(indexDesc)->indisunique &&
 			indexExpressions == NULL &&
 			indexPredicate == NULL;
 
@@ -5520,9 +5520,9 @@ restart:
 			attrs = &hotblockingattrs;
 
 		/* Collect simple attribute references */
-		for (i = 0; i < indexDesc->rd_index->indnatts; i++)
+		for (i = 0; i < RelationGetIndex(indexDesc)->indnatts; i++)
 		{
-			int			attrnum = indexDesc->rd_index->indkey.values[i];
+			int			attrnum = RelationGetIndex(indexDesc)->indkey.values[i];
 
 			/*
 			 * Since we have covering indexes with non-key columns, we must
@@ -5543,15 +5543,15 @@ restart:
 				*attrs = bms_add_member(*attrs,
 										attrnum - FirstLowInvalidHeapAttributeNumber);
 
-				if (isKey && i < indexDesc->rd_index->indnkeyatts)
+				if (isKey && i < RelationGetIndex(indexDesc)->indnkeyatts)
 					uindexattrs = bms_add_member(uindexattrs,
 												 attrnum - FirstLowInvalidHeapAttributeNumber);
 
-				if (isPK && i < indexDesc->rd_index->indnkeyatts)
+				if (isPK && i < RelationGetIndex(indexDesc)->indnkeyatts)
 					pkindexattrs = bms_add_member(pkindexattrs,
 												  attrnum - FirstLowInvalidHeapAttributeNumber);
 
-				if (isIDKey && i < indexDesc->rd_index->indnkeyatts)
+				if (isIDKey && i < RelationGetIndex(indexDesc)->indnkeyatts)
 					idindexattrs = bms_add_member(idindexattrs,
 												  attrnum - FirstLowInvalidHeapAttributeNumber);
 			}
@@ -5692,9 +5692,9 @@ RelationGetIdentityKeyBitmap(Relation relation)
 			 relation->rd_replidindex);
 
 	/* Add referenced attributes to idindexattrs */
-	for (i = 0; i < indexDesc->rd_index->indnatts; i++)
+	for (i = 0; i < RelationGetIndex(indexDesc)->indnatts; i++)
 	{
-		int			attrnum = indexDesc->rd_index->indkey.values[i];
+		int			attrnum = RelationGetIndex(indexDesc)->indkey.values[i];
 
 		/*
 		 * We don't include non-key columns into idindexattrs bitmaps. See
@@ -5702,7 +5702,7 @@ RelationGetIdentityKeyBitmap(Relation relation)
 		 */
 		if (attrnum != 0)
 		{
-			if (i < indexDesc->rd_index->indnkeyatts)
+			if (i < RelationGetIndex(indexDesc)->indnkeyatts)
 				idindexattrs = bms_add_member(idindexattrs,
 											  attrnum - FirstLowInvalidHeapAttributeNumber);
 		}
@@ -5781,7 +5781,7 @@ RelationGetExclusionInfo(Relation indexRelation,
 	ScanKeyInit(&skey[0],
 				Anum_pg_constraint_conrelid,
 				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(indexRelation->rd_index->indrelid));
+				ObjectIdGetDatum(RelationGetIndex(indexRelation)->indrelid));
 
 	conrel = table_open(ConstraintRelationId, AccessShareLock);
 	conscan = systable_beginscan(conrel, ConstraintRelidTypidNameIndexId, true,
@@ -6438,7 +6438,6 @@ load_relcache_init_file(bool shared)
 
 			/* Fix up internal pointers in the tuple -- see heap_copytuple */
 			rel->rd_indextuple->t_data = (HeapTupleHeader) ((char *) rel->rd_indextuple + HEAPTUPLESIZE);
-			rel->rd_index = (Form_pg_index) GETSTRUCT(rel->rd_indextuple);
 
 			/*
 			 * prepare index info context --- parameters should match
