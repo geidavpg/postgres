@@ -802,7 +802,7 @@ FindUsableIndexForReplicaIdentityFull(Relation localrel, AttrMap *attrmap)
 		 * permanently invalid leftover of a failed CREATE INDEX CONCURRENTLY
 		 * must never be chosen here.
 		 */
-		isUsableIdx = idxRel->rd_index->indisvalid &&
+		isUsableIdx = RelationGetIndex(idxRel)->indisvalid &&
 			IsIndexUsableForReplicaIdentityFull(idxRel, attrmap);
 		index_close(idxRel, AccessShareLock);
 
@@ -851,14 +851,14 @@ IsIndexUsableForReplicaIdentityFull(Relation idxrel, AttrMap *attrmap)
 	if (!heap_attisnull(idxrel->rd_indextuple, Anum_pg_index_indpred, NULL))
 		return false;
 
-	Assert(idxrel->rd_index->indnatts >= 1);
+	Assert(RelationGetIndex(idxrel)->indnatts >= 1);
 
 	indclass = (oidvector *) DatumGetPointer(SysCacheGetAttrNotNull(INDEXRELID,
 																	idxrel->rd_indextuple,
 																	Anum_pg_index_indclass));
 
 	/* Ensure that the index has a valid equal strategy for each key column */
-	for (int i = 0; i < idxrel->rd_index->indnkeyatts; i++)
+	for (int i = 0; i < RelationGetIndex(idxrel)->indnkeyatts; i++)
 	{
 		Oid			opfamily;
 
@@ -883,7 +883,7 @@ IsIndexUsableForReplicaIdentityFull(Relation idxrel, AttrMap *attrmap)
 	}
 
 	/* The leftmost index field must not be an expression */
-	keycol = idxrel->rd_index->indkey.values[0];
+	keycol = RelationGetIndex(idxrel)->indkey.values[0];
 	if (!AttributeNumberIsValid(keycol))
 		return false;
 

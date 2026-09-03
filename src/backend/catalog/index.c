@@ -1250,7 +1250,7 @@ index_create(Relation heapRelation,
 	else
 		Assert(indexRelation->rd_indexcxt != NULL);
 
-	indexRelation->rd_index->indnkeyatts = indexInfo->ii_NumIndexKeyAttrs;
+	RelationGetIndex(indexRelation)->indnkeyatts = indexInfo->ii_NumIndexKeyAttrs;
 
 	/* Validate opclass-specific options */
 	if (opclassOptions)
@@ -1420,7 +1420,7 @@ index_create_copy(Relation heapRelation, uint16 flags,
 							oldInfo->ii_WithoutOverlaps);
 
 	/* fetch exclusion constraint info if any */
-	if (indexRelation->rd_index->indisexclusion)
+	if (RelationGetIndex(indexRelation)->indisexclusion)
 	{
 		/*
 		 * XXX Beware: we're making newInfo point to oldInfo-owned memory.  It
@@ -2461,7 +2461,7 @@ IndexInfo *
 BuildIndexInfo(Relation index)
 {
 	IndexInfo  *ii;
-	Form_pg_index indexStruct = index->rd_index;
+	Form_pg_index indexStruct = RelationGetIndex(index);
 	int			i;
 	int			numAtts;
 
@@ -2521,7 +2521,7 @@ IndexInfo *
 BuildDummyIndexInfo(Relation index)
 {
 	IndexInfo  *ii;
-	Form_pg_index indexStruct = index->rd_index;
+	Form_pg_index indexStruct = RelationGetIndex(index);
 	int			i;
 	int			numAtts;
 
@@ -2775,8 +2775,8 @@ BuildSpeculativeIndexInfo(Relation index, IndexInfo *ii)
 bool
 IsIndexCompatibleAsArbiter(Relation indexRel1, Relation indexRel2)
 {
-	Form_pg_index indexForm1 = indexRel1->rd_index;
-	Form_pg_index indexForm2 = indexRel2->rd_index;
+	Form_pg_index indexForm1 = RelationGetIndex(indexRel1);
+	Form_pg_index indexForm2 = RelationGetIndex(indexRel2);
 
 	/* Only indexes of the same relation can be compared. */
 	Assert(indexForm1->indrelid == indexForm2->indrelid);

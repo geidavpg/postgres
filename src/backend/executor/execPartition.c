@@ -778,7 +778,7 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 					unparented_ii = leaf_part_rri->ri_IndexRelationInfo[unparented_i];
 
 					Assert(!list_member_oid(arbiterIndexes,
-											unparented_rel->rd_index->indexrelid));
+											RelationGetIndex(unparented_rel)->indexrelid));
 
 					/* Ignore indexes not ready */
 					if (!unparented_ii->ii_ReadyForInserts)
@@ -798,7 +798,7 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 													   unparented_rel))
 						{
 							arbiterIndexes = lappend_oid(arbiterIndexes,
-														 unparented_rel->rd_index->indexrelid);
+														 RelationGetIndex(unparented_rel)->indexrelid);
 							additional_arbiters++;
 							break;
 						}

@@ -361,7 +361,7 @@ index_beginscan_internal(Relation indexRelation, Relation heapRelation,
 		 */
 		if (index_only_scan)
 		{
-			int			indnkeyatts = indexRelation->rd_index->indnkeyatts;
+			int			indnkeyatts = RelationGetIndex(indexRelation)->indnkeyatts;
 			int			namecount = 0;
 
 			for (int attnum = 0; attnum < indnkeyatts; attnum++)

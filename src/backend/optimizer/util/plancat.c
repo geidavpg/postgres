@@ -237,7 +237,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			 * Extract info from the relation descriptor for the index.
 			 */
 			indexRelation = index_open(indexoid, lmode);
-			index = indexRelation->rd_index;
+			index = RelationGetIndex(indexRelation);
 
 			/*
 			 * Ignore invalid indexes, since they can't safely be used for
@@ -921,7 +921,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 		{
 			if (indexOidFromConstraint == RelationGetRelid(idxRel))
 			{
-				Assert(idxRel->rd_index->indisready);
+				Assert(RelationGetIndex(idxRel)->indisready);
 				indexRelFromConstraint = idxRel;
 				break;
 			}
@@ -951,7 +951,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 		 * enforcement needs to occur there anyway when an inference clause is
 		 * omitted.
 		 */
-		idxForm = idxRel->rd_index;
+		idxForm = RelationGetIndex(idxRel);
 
 		/*
 		 * Ignore indexes that aren't indisready, because we cannot trust
@@ -1048,7 +1048,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 		indexedAttrs = NULL;
 		for (natt = 0; natt < idxForm->indnkeyatts; natt++)
 		{
-			int			attno = idxRel->rd_index->indkey.values[natt];
+			int			attno = RelationGetIndex(idxRel)->indkey.values[natt];
 
 			if (attno != 0)
 				indexedAttrs = bms_add_member(indexedAttrs,
@@ -1224,7 +1224,7 @@ infer_collation_opclass_match(InferenceElem *elem, Relation idxRel,
 		Oid			opfamily = idxRel->rd_opfamily[natt - 1];
 		Oid			opcinputtype = idxRel->rd_opcintype[natt - 1];
 		Oid			collation = idxRel->rd_indcollation[natt - 1];
-		int			attno = idxRel->rd_index->indkey.values[natt - 1];
+		int			attno = RelationGetIndex(idxRel)->indkey.values[natt - 1];
 
 		if (attno != 0)
 			nplain++;
