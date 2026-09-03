@@ -1259,23 +1259,26 @@ retry:
 	 * Note that RelationBuildRuleLock() relies on this being done after
 	 * extracting the relation's reloptions.
 	 */
-	if (relation->rd_rel->relhasrules)
-		RelationBuildRuleLock(relation);
-	else
+	if (!RelationIsIndex(relation))
 	{
-		relation->rd_rules = NULL;
-		relation->rd_rulescxt = NULL;
+		if (relation->rd_rel->relhasrules)
+			RelationBuildRuleLock(relation);
+		else
+		{
+			relation->rd_rules = NULL;
+			relation->rd_rulescxt = NULL;
+		}
+
+		if (relation->rd_rel->relhastriggers)
+			RelationBuildTriggers(relation);
+		else
+			relation->trigdesc = NULL;
+
+		if (relation->rd_rel->relrowsecurity)
+			RelationBuildRowSecurity(relation);
+		else
+			relation->rd_rsdesc = NULL;
 	}
-
-	if (relation->rd_rel->relhastriggers)
-		RelationBuildTriggers(relation);
-	else
-		relation->trigdesc = NULL;
-
-	if (relation->rd_rel->relrowsecurity)
-		RelationBuildRowSecurity(relation);
-	else
-		relation->rd_rsdesc = NULL;
 
 	/*
 	 * initialize the relation lock manager information
@@ -2239,7 +2242,7 @@ RelationCloseCleanup(Relation relation)
 	 * stale partition descriptors it has.  This is unlikely, so check to see
 	 * if there are child contexts before expending a call to mcxt.c.
 	 */
-	if (RelationHasReferenceCountZero(relation))
+	if (RelationHasReferenceCountZero(relation) && !RelationIsIndex(relation))
 	{
 		if (relation->rd_pdcxt != NULL &&
 			relation->rd_pdcxt->firstchild != NULL)
@@ -2444,6 +2447,8 @@ RelationReloadNailed(Relation relation)
 static void
 RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 {
+	const bool is_index = relation->rd_rel && RelationIsIndex(relation);
+
 	Assert(RelationHasReferenceCountZero(relation));
 
 	/*
@@ -2479,39 +2484,45 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 		else
 			FreeTupleDesc(relation->rd_att);
 	}
-	FreeTriggerDesc(relation->trigdesc);
-	list_free_deep(relation->rd_fkeylist);
-	list_free(relation->rd_indexlist);
-	list_free(relation->rd_statlist);
-	bms_free(relation->rd_keyattr);
-	bms_free(relation->rd_pkattr);
-	bms_free(relation->rd_idattr);
-	bms_free(relation->rd_hotblockingattr);
-	bms_free(relation->rd_summarizedattr);
-	if (relation->rd_pubdesc)
-		pfree(relation->rd_pubdesc);
 	if (relation->rd_options)
 		pfree(relation->rd_options);
-	if (relation->rd_indextuple)
-		pfree(relation->rd_indextuple);
 	if (relation->rd_amcache)
 		pfree(relation->rd_amcache);
-	if (relation->rd_fdwroutine)
-		pfree(relation->rd_fdwroutine);
-	if (relation->rd_indexcxt)
-		MemoryContextDelete(relation->rd_indexcxt);
-	if (relation->rd_rulescxt)
-		MemoryContextDelete(relation->rd_rulescxt);
-	if (relation->rd_rsdesc)
-		MemoryContextDelete(relation->rd_rsdesc->rscxt);
-	if (relation->rd_partkeycxt)
-		MemoryContextDelete(relation->rd_partkeycxt);
-	if (relation->rd_pdcxt)
-		MemoryContextDelete(relation->rd_pdcxt);
-	if (relation->rd_pddcxt)
-		MemoryContextDelete(relation->rd_pddcxt);
 	if (relation->rd_partcheckcxt)
 		MemoryContextDelete(relation->rd_partcheckcxt);
+	if (!is_index)
+	{
+		list_free(relation->rd_indexlist);
+		list_free(relation->rd_statlist);
+		FreeTriggerDesc(relation->trigdesc);
+		list_free_deep(relation->rd_fkeylist);
+		bms_free(relation->rd_keyattr);
+		bms_free(relation->rd_pkattr);
+		bms_free(relation->rd_idattr);
+		bms_free(relation->rd_hotblockingattr);
+		bms_free(relation->rd_summarizedattr);
+		if (relation->rd_pubdesc)
+			pfree(relation->rd_pubdesc);
+		if (relation->rd_fdwroutine)
+			pfree(relation->rd_fdwroutine);
+		if (relation->rd_rulescxt)
+			MemoryContextDelete(relation->rd_rulescxt);
+		if (relation->rd_rsdesc)
+			MemoryContextDelete(relation->rd_rsdesc->rscxt);
+		if (relation->rd_partkeycxt)
+			MemoryContextDelete(relation->rd_partkeycxt);
+		if (relation->rd_pdcxt)
+			MemoryContextDelete(relation->rd_pdcxt);
+		if (relation->rd_pddcxt)
+			MemoryContextDelete(relation->rd_pddcxt);
+	}
+	else
+	{
+		if (relation->rd_indextuple)
+			pfree(relation->rd_indextuple);
+		if (relation->rd_indexcxt)
+			MemoryContextDelete(relation->rd_indexcxt);
+	}
 	pfree(relation);
 }
 
@@ -2657,9 +2668,9 @@ RelationRebuildRelation(Relation relation)
 		Relation	newrel;
 		Oid			save_relid = RelationGetRelid(relation);
 		bool		keep_tupdesc;
-		bool		keep_rules;
-		bool		keep_policies;
-		bool		keep_partkey;
+		bool		keep_rules = false;
+		bool		keep_policies = false;
+		bool		keep_partkey = false;
 
 		/* Build temporary entry, but don't link it into hashtable */
 		newrel = RelationBuildDesc(save_relid, false);
@@ -2703,10 +2714,14 @@ RelationRebuildRelation(Relation relation)
 		Assert(relation->rd_rel->relkind == newrel->rd_rel->relkind);
 
 		keep_tupdesc = equalTupleDescs(relation->rd_att, newrel->rd_att);
-		keep_rules = equalRuleLocks(relation->rd_rules, newrel->rd_rules);
-		keep_policies = equalRSDesc(relation->rd_rsdesc, newrel->rd_rsdesc);
-		/* partkey is immutable once set up, so we can always keep it */
-		keep_partkey = (relation->rd_partkey != NULL);
+
+		if (!RelationIsIndex(relation))
+		{
+			keep_rules = equalRuleLocks(relation->rd_rules, newrel->rd_rules);
+			keep_policies = equalRSDesc(relation->rd_rsdesc, newrel->rd_rsdesc);
+			/* partkey is immutable once set up, so we can always keep it */
+			keep_partkey = (relation->rd_partkey != NULL);
+		}
 
 		/*
 		 * Perform swapping of the relcache entry contents.  Within this
@@ -6512,6 +6527,13 @@ load_relcache_init_file(bool shared)
 			nsupport = relform->relnatts * rel->rd_indam->amsupport;
 			rel->rd_supportinfo = (FmgrInfo *)
 				MemoryContextAllocZero(indexcxt, nsupport * sizeof(FmgrInfo));
+
+			/* These lazily built fields are not stored in the init file. */
+			rel->rd_indexprs = NIL;
+			rel->rd_indpred = NIL;
+			rel->rd_exclops = NULL;
+			rel->rd_exclprocs = NULL;
+			rel->rd_exclstrats = NULL;
 		}
 		else
 		{
@@ -6522,18 +6544,6 @@ load_relcache_init_file(bool shared)
 			/* Load table AM data */
 			if (RELKIND_HAS_TABLE_AM(rel->rd_rel->relkind) || rel->rd_rel->relkind == RELKIND_SEQUENCE)
 				RelationInitTableAccessMethod(rel);
-
-			Assert(rel->rd_index == NULL);
-			Assert(rel->rd_indextuple == NULL);
-			Assert(rel->rd_indexcxt == NULL);
-			Assert(rel->rd_indam == NULL);
-			Assert(rel->rd_opfamily == NULL);
-			Assert(rel->rd_opcintype == NULL);
-			Assert(rel->rd_support == NULL);
-			Assert(rel->rd_supportinfo == NULL);
-			Assert(rel->rd_indoption == NULL);
-			Assert(rel->rd_indcollation == NULL);
-			Assert(rel->rd_opcoptions == NULL);
 		}
 
 		/*
@@ -6543,55 +6553,60 @@ load_relcache_init_file(bool shared)
 		 * be a big performance hit since few system catalogs have such. Ditto
 		 * for RLS policy data, partition info, index expressions, predicates,
 		 * exclusion info, and FDW info.
+		 *
+		 * These fields are overlaid in a union with the index-only fields
+		 * that were just set up above (see RelationData in rel_internal.h),
+		 * so this must be skipped for index relations to avoid clobbering
+		 * that data.
 		 */
-		rel->rd_rules = NULL;
-		rel->rd_rulescxt = NULL;
-		rel->trigdesc = NULL;
-		rel->rd_rsdesc = NULL;
-		rel->rd_partkey = NULL;
-		rel->rd_partkeycxt = NULL;
-		rel->rd_partdesc = NULL;
-		rel->rd_partdesc_nodetached = NULL;
-		rel->rd_partdesc_nodetached_xmin = InvalidTransactionId;
-		rel->rd_pdcxt = NULL;
-		rel->rd_pddcxt = NULL;
-		rel->rd_partcheck = NIL;
-		rel->rd_partcheckvalid = false;
-		rel->rd_partcheckcxt = NULL;
-		rel->rd_indexprs = NIL;
-		rel->rd_indpred = NIL;
-		rel->rd_exclops = NULL;
-		rel->rd_exclprocs = NULL;
-		rel->rd_exclstrats = NULL;
-		rel->rd_fdwroutine = NULL;
+		if (!RelationIsIndex(rel))
+		{
+			rel->rd_rules = NULL;
+			rel->rd_rulescxt = NULL;
+			rel->trigdesc = NULL;
+			rel->rd_rsdesc = NULL;
+			rel->rd_partkey = NULL;
+			rel->rd_partkeycxt = NULL;
+			rel->rd_partdesc = NULL;
+			rel->rd_partdesc_nodetached = NULL;
+			rel->rd_partdesc_nodetached_xmin = InvalidTransactionId;
+			rel->rd_pdcxt = NULL;
+			rel->rd_pddcxt = NULL;
+			rel->rd_keyattr = NULL;
+			rel->rd_pkattr = NULL;
+			rel->rd_idattr = NULL;
+			rel->rd_hotblockingattr = NULL;
+			rel->rd_summarizedattr = NULL;
+			rel->rd_pubdesc = NULL;
+			rel->rd_fdwroutine = NULL;
+			rel->rd_fkeyvalid = false;
+			rel->rd_fkeylist = NIL;
+			rel->rd_indexvalid = false;
+			rel->rd_indexlist = NIL;
+			rel->rd_pkindex = InvalidOid;
+			rel->rd_replidindex = InvalidOid;
+			rel->rd_attrsvalid = false;
+			rel->rd_statvalid = false;
+			rel->rd_statlist = NIL;
+			rel->rd_toastchunkidtype = InvalidOid;
+		}
 
 		/*
 		 * Reset transient-state fields in the relcache entry
 		 */
 		rel->rd_smgr = NULL;
+		rel->rd_partcheck = NIL;
+		rel->rd_partcheckvalid = false;
+		rel->rd_partcheckcxt = NULL;
 		if (rel->rd_isnailed)
 			rel->rd_refcnt = 1;
 		else
 			rel->rd_refcnt = 0;
-		rel->rd_indexvalid = false;
-		rel->rd_indexlist = NIL;
-		rel->rd_pkindex = InvalidOid;
-		rel->rd_replidindex = InvalidOid;
-		rel->rd_attrsvalid = false;
-		rel->rd_keyattr = NULL;
-		rel->rd_pkattr = NULL;
-		rel->rd_idattr = NULL;
-		rel->rd_pubdesc = NULL;
-		rel->rd_statvalid = false;
-		rel->rd_statlist = NIL;
-		rel->rd_fkeyvalid = false;
-		rel->rd_fkeylist = NIL;
 		rel->rd_createSubid = InvalidSubTransactionId;
 		rel->rd_newRelfilelocatorSubid = InvalidSubTransactionId;
 		rel->rd_firstRelfilelocatorSubid = InvalidSubTransactionId;
 		rel->rd_droppedSubid = InvalidSubTransactionId;
 		rel->rd_amcache = NULL;
-		rel->rd_toastchunkidtype = InvalidOid;
 		rel->pgstat_info = NULL;
 
 		/*

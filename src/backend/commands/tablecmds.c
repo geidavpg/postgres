@@ -19194,7 +19194,7 @@ ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode
 	indexRel = index_open(indexOid, ShareLock);
 
 	/* Check that the index is on the relation we're altering. */
-	if (indexRel->rd_index == NULL ||
+	if (!RelationIsIndex(indexRel) ||
 		indexRel->rd_index->indrelid != RelationGetRelid(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
