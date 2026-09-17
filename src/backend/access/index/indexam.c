@@ -305,6 +305,36 @@ index_beginscan_bitmap(Relation indexRelation,
 }
 
 /*
+ * index_beginscan_bitmap_parallel - start a parallel scan of an index with amgetbitmap.
+ *
+ * Unlike index_beginscan_parallel, no heap relation is supplied:
+ * bitmap index scans never access the heap directly.
+ */
+IndexScanDesc
+index_beginscan_bitmap_parallel(Relation indexRelation,
+								Snapshot snapshot,
+								IndexScanInstrumentation *instrument,
+								int nkeys,
+								ParallelIndexScanDesc pscan)
+{
+	Snapshot	restoredsnap;
+
+	Assert(snapshot != InvalidSnapshot);
+	Assert(IsMVCCLikeSnapshot(snapshot));
+
+	/*
+	 * Use the snapshot serialized in the parallel scan descriptor, just like
+	 * index_beginscan_parallel does.  Register it so that index_endscan can
+	 * unregister it from the same resource owner.
+	 */
+	restoredsnap = RestoreSnapshot(pscan->ps_snapshot_data);
+	RegisterSnapshot(restoredsnap);
+
+	return index_beginscan_internal(indexRelation, NULL, nkeys, 0, restoredsnap,
+									pscan, instrument, false, true, SO_NONE);
+}
+
+/*
  * index_beginscan_internal --- common code for index_beginscan variants
  *
  * When heapRelation is not NULL, also initializes table AM index scan state.

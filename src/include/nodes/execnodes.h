@@ -1809,6 +1809,10 @@ typedef struct IndexOnlyScanState
  *		SharedInfo		   parallel worker instrumentation (no leader entry)
  * ----------------
  */
+
+/* this struct is defined in nodeBitmapIndexscan.c */
+typedef struct SharedBitmapIndexState SharedBitmapIndexState;
+
 typedef struct BitmapIndexScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
@@ -1825,6 +1829,8 @@ typedef struct BitmapIndexScanState
 	struct IndexScanDescData *biss_ScanDesc;
 	IndexScanInstrumentation *biss_Instrument;
 	SharedIndexScanInstrumentation *biss_SharedInfo;
+	Size		biss_PscanLen;
+	SharedBitmapIndexState *biss_ParallelState;
 } BitmapIndexScanState;
 
 
@@ -1835,14 +1841,10 @@ typedef struct BitmapIndexScanState
  *		tbm				   bitmap obtained from child index scan(s)
  *		stats			   execution statistics
  *		initialized		   is node is ready to iterate
- *		pstate			   shared state for parallel bitmap scan
- *		sinstrument		   statistics for parallel workers
+ *	 *		sinstrument		   statistics for parallel workers
  *		recheck			   do current page's tuples need recheck
  * ----------------
  */
-
-/* this struct is defined in nodeBitmapHeapscan.c */
-typedef struct ParallelBitmapHeapState ParallelBitmapHeapState;
 
 typedef struct BitmapHeapScanState
 {
@@ -1851,7 +1853,6 @@ typedef struct BitmapHeapScanState
 	TIDBitmap  *tbm;
 	BitmapHeapScanInstrumentation stats;
 	bool		initialized;
-	ParallelBitmapHeapState *pstate;
 	SharedBitmapHeapInstrumentation *sinstrument;
 	bool		recheck;
 } BitmapHeapScanState;

@@ -39,25 +39,11 @@
  */
 typedef struct TIDBitmap TIDBitmap;
 
-/* Likewise, TBMPrivateIterator is private */
-typedef struct TBMPrivateIterator TBMPrivateIterator;
-typedef struct TBMSharedIterator TBMSharedIterator;
+/* Likewise, iterators are private */
+typedef struct TBMOrderedIterator TBMOrderedIterator;
+typedef struct TBMUnorderedIterator TBMUnorderedIterator;
 
-/*
- * Callers with both private and shared implementations can use this unified
- * API.
- */
-typedef struct TBMIterator
-{
-	bool		shared;
-	union
-	{
-		TBMPrivateIterator *private_iterator;
-		TBMSharedIterator *shared_iterator;
-	}			i;
-} TBMIterator;
-
-/* Result structure for tbm_iterate */
+/* Result structure for iteration */
 typedef struct TBMIterateResult
 {
 	BlockNumber blockno;		/* block number containing tuples */
@@ -82,12 +68,12 @@ typedef struct TBMIterateResult
 
 extern TIDBitmap *tbm_create(Size maxbytes, dsa_area *dsa);
 extern void tbm_free(TIDBitmap *tbm);
-extern void tbm_free_shared_area(dsa_area *dsa, dsa_pointer dp);
 
 extern void tbm_add_tuples(TIDBitmap *tbm,
 						   const ItemPointerData *tids, int ntids,
 						   bool recheck);
 extern void tbm_add_page(TIDBitmap *tbm, BlockNumber pageno);
+extern void tbm_copy_page(TIDBitmap *dest, TBMIterateResult *src);
 
 extern void tbm_union(TIDBitmap *a, const TIDBitmap *b);
 extern void tbm_intersect(TIDBitmap *a, const TIDBitmap *b);
@@ -98,30 +84,15 @@ extern int	tbm_extract_page_tuple(TBMIterateResult *iteritem,
 
 extern bool tbm_is_empty(const TIDBitmap *tbm);
 
-extern TBMPrivateIterator *tbm_begin_private_iterate(TIDBitmap *tbm);
-extern dsa_pointer tbm_prepare_shared_iterate(TIDBitmap *tbm);
-extern bool tbm_private_iterate(TBMPrivateIterator *iterator, TBMIterateResult *tbmres);
-extern bool tbm_shared_iterate(TBMSharedIterator *iterator, TBMIterateResult *tbmres);
-extern void tbm_end_private_iterate(TBMPrivateIterator *iterator);
-extern void tbm_end_shared_iterate(TBMSharedIterator *iterator);
-extern TBMSharedIterator *tbm_attach_shared_iterate(dsa_area *dsa,
-													dsa_pointer dp);
+extern TBMOrderedIterator *tbm_begin_ordered_iterate(TIDBitmap *tbm);
+extern bool tbm_ordered_iterate(TBMOrderedIterator *iterator, TBMIterateResult *tbmres);
+extern void tbm_end_ordered_iterate(TBMOrderedIterator **iterator);
+
+extern dsa_pointer tbm_prepare_shared_unordered_iterate(TIDBitmap *tbm);
+extern TBMUnorderedIterator *tbm_begin_shared_unordered_iterate(dsa_area *dsa, dsa_pointer dp);
+extern bool tbm_shared_unordered_iterate(TBMUnorderedIterator *iterator, TBMIterateResult *tbmres);
+extern void tbm_end_shared_unordered_iterate(TBMUnorderedIterator **iterator);
+
 extern int	tbm_calculate_entries(Size maxbytes);
-
-extern TBMIterator tbm_begin_iterate(TIDBitmap *tbm,
-									 dsa_area *dsa, dsa_pointer dsp);
-extern void tbm_end_iterate(TBMIterator *iterator);
-
-extern bool tbm_iterate(TBMIterator *iterator, TBMIterateResult *tbmres);
-
-static inline bool
-tbm_exhausted(TBMIterator *iterator)
-{
-	/*
-	 * It doesn't matter if we check the private or shared iterator here. If
-	 * tbm_end_iterate() was called, they will be NULL
-	 */
-	return !iterator->i.private_iterator;
-}
 
 #endif							/* TIDBITMAP_H */

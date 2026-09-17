@@ -480,7 +480,7 @@ WHERE t1.unique1 < 1000;
                ->  Nested Loop
                      ->  Parallel Bitmap Heap Scan on tenk1 t1
                            Recheck Cond: (unique1 < 1000)
-                           ->  Bitmap Index Scan on tenk1_unique1
+                           ->  Parallel Bitmap Index Scan on tenk1_unique1
                                  Index Cond: (unique1 < 1000)
                      ->  Memoize
                            Cache Key: t1.twenty

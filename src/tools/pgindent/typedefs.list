@@ -288,6 +288,7 @@ BitmapHeapScanInstrumentation
 BitmapHeapScanState
 BitmapIndexScan
 BitmapIndexScanState
+SharedBitmapIndexState
 BitmapOr
 BitmapOrPath
 BitmapOrState
@@ -2101,7 +2102,6 @@ PSQL_ECHO
 PSQL_ECHO_HIDDEN
 PSQL_ERROR_ROLLBACK
 PSQL_SEND_MODE
-PTEntryArray
 PTIterationArray
 PTOKEN_PRIVILEGES
 PTOKEN_USER
@@ -2130,7 +2130,6 @@ ParallelAppendState
 ParallelApplyWorkerEntry
 ParallelApplyWorkerInfo
 ParallelApplyWorkerShared
-ParallelBitmapHeapState
 ParallelBlockTableScanDesc
 ParallelBlockTableScanWorker
 ParallelBlockTableScanWorkerData
@@ -3067,9 +3066,8 @@ TAPtype
 TAR_MEMBER
 TBMIterateResult
 TBMIteratingState
-TBMIterator
-TBMPrivateIterator
-TBMSharedIterator
+TBMOrderedIterator
+TBMUnorderedIterator
 TBMSharedIteratorState
 TBMStatus
 TBlockState

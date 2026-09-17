@@ -374,7 +374,7 @@ restartScanEntry:
 			if (entry->matchBitmap)
 			{
 				if (entry->matchIterator)
-					tbm_end_private_iterate(entry->matchIterator);
+					tbm_end_ordered_iterate(&entry->matchIterator);
 				entry->matchIterator = NULL;
 				tbm_free(entry->matchBitmap);
 				entry->matchBitmap = NULL;
@@ -387,7 +387,7 @@ restartScanEntry:
 		if (entry->matchBitmap && !tbm_is_empty(entry->matchBitmap))
 		{
 			entry->matchIterator =
-				tbm_begin_private_iterate(entry->matchBitmap);
+				tbm_begin_ordered_iterate(entry->matchBitmap);
 			entry->isFinished = false;
 		}
 	}
@@ -828,7 +828,7 @@ entryGetItem(GinState *ginstate, GinScanEntry entry,
 		{
 			/*
 			 * If we've exhausted all items on this block, move to next block
-			 * in the bitmap. tbm_private_iterate() sets matchResult.blockno
+			 * in the bitmap. tbm_ordered_iterate() sets matchResult.blockno
 			 * to InvalidBlockNumber when the bitmap is exhausted.
 			 */
 			while ((!BlockNumberIsValid(entry->matchResult.blockno)) ||
@@ -838,11 +838,11 @@ entryGetItem(GinState *ginstate, GinScanEntry entry,
 				   (ItemPointerIsLossyPage(&advancePast) &&
 					entry->matchResult.blockno == advancePastBlk))
 			{
-				if (!tbm_private_iterate(entry->matchIterator, &entry->matchResult))
+				if (!tbm_ordered_iterate(entry->matchIterator, &entry->matchResult))
 				{
 					Assert(!BlockNumberIsValid(entry->matchResult.blockno));
 					ItemPointerSetInvalid(&entry->curItem);
-					tbm_end_private_iterate(entry->matchIterator);
+					tbm_end_ordered_iterate(&entry->matchIterator);
 					entry->matchIterator = NULL;
 					entry->isFinished = true;
 					break;

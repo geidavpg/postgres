@@ -330,7 +330,7 @@ bitmapheap_stream_read_next(ReadStream *pgsr, void *private_data,
 		CHECK_FOR_INTERRUPTS();
 
 		/* no more entries in the bitmap */
-		if (!tbm_iterate(&sscan->st.rs_tbmiterator, tbmres))
+		if (!tbm_ordered_iterate(sscan->st.rs_tbmiterator, tbmres))
 			return InvalidBlockNumber;
 
 		/*

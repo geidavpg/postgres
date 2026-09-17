@@ -349,7 +349,7 @@ typedef struct GinScanEntryData
 
 	/* for a partial-match or full-scan query, we accumulate all TIDs here */
 	TIDBitmap  *matchBitmap;
-	TBMPrivateIterator *matchIterator;
+	TBMOrderedIterator *matchIterator;
 
 	/*
 	 * If blockno is InvalidBlockNumber, all of the other fields in the

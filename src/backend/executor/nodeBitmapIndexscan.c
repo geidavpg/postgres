@@ -22,12 +22,35 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/relscan.h"
+#include "common/hashfn.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
 #include "executor/nodeBitmapIndexscan.h"
 #include "executor/nodeIndexscan.h"
 #include "miscadmin.h"
 #include "nodes/tidbitmap.h"
+#include "port/atomics.h"
+#include "storage/barrier.h"
+#include "utils/wait_event.h"
+
+/*
+ * Per-BitmapIndexScan shared state used to share locally-built bitmaps among
+ * workers and coordinate the partition/free phases.
+ */
+typedef struct SharedBitmapIndexState
+{
+	int			max_participants;	/* leader + max number of workers */
+	pg_atomic_uint32 next_participant_id;	/* assigns contiguous ids */
+	Barrier		barrier;
+	dsa_pointer worker_tbmiter[FLEXIBLE_ARRAY_MEMBER];
+} SharedBitmapIndexState;
+
+#define PARALLEL_KEY_BITMAP_INDEX_OFFSET UINT64CONST(0xD100000000000000)
+
+static Size BitmapIndexScanSharedStateSize(int nworkers);
+static TIDBitmap *BitmapIndexScanPartition(BitmapIndexScanState *node,
+									   TIDBitmap *tbm);
 
 
 /* ----------------------------------------------------------------
@@ -65,6 +88,24 @@ MultiExecBitmapIndexScan(BitmapIndexScanState *node)
 	scandesc = node->biss_ScanDesc;
 
 	/*
+	 * Serial execution of a parallel-aware plan (no workers launched) needs a
+	 * scan descriptor that we did not create during DSM setup.
+	 */
+	if (scandesc == NULL)
+	{
+		scandesc = index_beginscan_bitmap(node->biss_RelationDesc,
+										node->ss.ps.state->es_snapshot,
+										node->biss_Instrument,
+										node->biss_NumScanKeys);
+		node->biss_ScanDesc = scandesc;
+
+		if (node->biss_NumRuntimeKeys == 0 || node->biss_RuntimeKeysReady)
+			index_rescan(scandesc,
+						 node->biss_ScanKeys, node->biss_NumScanKeys,
+						 NULL, 0);
+	}
+
+	/*
 	 * If we have runtime keys and they've not already been set up, do it now.
 	 * Array keys are also treated as runtime keys; note that if ExecReScan
 	 * returns with biss_RuntimeKeysReady still false, then there is an empty
@@ -78,6 +119,33 @@ MultiExecBitmapIndexScan(BitmapIndexScanState *node)
 	}
 	else
 		doscan = true;
+
+	/*
+	 * If we're running as part of a parallel query, we need to attach to the
+	 * barrier before scanning the index.  This ensures that workers that arrive
+	 * late don't waste time scanning the index only to discard their bitmap.
+	 */
+	if (node->biss_ParallelState != NULL)
+	{
+		SharedBitmapIndexState *sstate = node->biss_ParallelState;
+		int			phase;
+
+		phase = BarrierAttach(&sstate->barrier);
+		if (phase != 0)
+		{
+			/*
+			 * We attached after the build phase was already done.  We cannot
+			 * contribute a partition, so just detach and return an empty bitmap.
+			 */
+			TIDBitmap  *empty_bitmap;
+
+			BarrierDetach(&sstate->barrier);
+			empty_bitmap = tbm_create(work_mem * (Size) 1024, NULL);
+			if (node->ss.ps.instrument)
+				InstrStopNode(node->ss.ps.instrument, 0);
+			return (Node *) empty_bitmap;
+		}
+	}
 
 	/*
 	 * Prepare the result bitmap.  Normally we just create a new one to pass
@@ -94,7 +162,7 @@ MultiExecBitmapIndexScan(BitmapIndexScanState *node)
 	{
 		/* XXX should we use less than work_mem for this? */
 		tbm = tbm_create(work_mem * (Size) 1024,
-						 ((BitmapIndexScan *) node->ss.ps.plan)->isshared ?
+						 node->ss.ps.plan->parallel_aware ?
 						 node->ss.ps.state->es_query_dsa : NULL);
 	}
 
@@ -114,6 +182,13 @@ MultiExecBitmapIndexScan(BitmapIndexScanState *node)
 						 node->biss_ScanKeys, node->biss_NumScanKeys,
 						 NULL, 0);
 	}
+
+	/*
+	 * If we're running as part of a parallel query, partition the full bitmap
+	 * so that each worker gets a disjoint subset of the heap blocks.
+	 */
+	if (node->biss_ParallelState != NULL)
+		tbm = BitmapIndexScanPartition(node, tbm);
 
 	/* must provide our own instrumentation support */
 	if (node->ss.ps.instrument)
@@ -157,13 +232,13 @@ ExecReScanBitmapIndexScan(BitmapIndexScanState *node)
 	if (node->biss_NumArrayKeys != 0)
 		node->biss_RuntimeKeysReady =
 			ExecIndexEvalArrayKeys(econtext,
-								   node->biss_ArrayKeys,
-								   node->biss_NumArrayKeys);
+								 node->biss_ArrayKeys,
+								 node->biss_NumArrayKeys);
 	else
 		node->biss_RuntimeKeysReady = true;
 
 	/* reset index scan */
-	if (node->biss_RuntimeKeysReady)
+	if (node->biss_RuntimeKeysReady && node->biss_ScanDesc)
 		index_rescan(node->biss_ScanDesc,
 					 node->biss_ScanKeys, node->biss_NumScanKeys,
 					 NULL, 0);
@@ -227,6 +302,7 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 {
 	BitmapIndexScanState *indexstate;
 	LOCKMODE	lockmode;
+	bool		parallel_aware = node->scan.plan.parallel_aware;
 
 	/* check for unsupported flags */
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
@@ -246,9 +322,15 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	 * We do not open or lock the base relation here.  We assume that an
 	 * ancestor BitmapHeapScan node is holding AccessShareLock (or better) on
 	 * the heap relation throughout the execution of the plan tree.
+	 *
+	 * For a parallel-aware scan, however, we need access to the heap relation
+	 * to initialize the parallel index scan descriptor.
 	 */
-
-	indexstate->ss.ss_currentRelation = NULL;
+	if (parallel_aware && !(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		indexstate->ss.ss_currentRelation =
+			ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
+	else
+		indexstate->ss.ss_currentRelation = NULL;
 	indexstate->ss.ss_currentScanDesc = NULL;
 
 	/*
@@ -325,23 +407,27 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	}
 
 	/*
-	 * Initialize scan descriptor.
+	 * Initialize scan descriptor.  For parallel-aware scans this is delayed
+	 * until the DSM is set up.
 	 */
-	indexstate->biss_ScanDesc =
-		index_beginscan_bitmap(indexstate->biss_RelationDesc,
-							   estate->es_snapshot,
-							   indexstate->biss_Instrument,
-							   indexstate->biss_NumScanKeys);
+	if (!parallel_aware)
+	{
+		indexstate->biss_ScanDesc =
+			index_beginscan_bitmap(indexstate->biss_RelationDesc,
+								   estate->es_snapshot,
+								   indexstate->biss_Instrument,
+								   indexstate->biss_NumScanKeys);
 
-	/*
-	 * If no run-time keys to calculate, go ahead and pass the scankeys to the
-	 * index AM.
-	 */
-	if (indexstate->biss_NumRuntimeKeys == 0 &&
-		indexstate->biss_NumArrayKeys == 0)
-		index_rescan(indexstate->biss_ScanDesc,
-					 indexstate->biss_ScanKeys, indexstate->biss_NumScanKeys,
-					 NULL, 0);
+		/*
+		 * If no run-time keys to calculate, go ahead and pass the scankeys to the
+		 * index AM.
+		 */
+		if (indexstate->biss_NumRuntimeKeys == 0 &&
+			indexstate->biss_NumArrayKeys == 0)
+			index_rescan(indexstate->biss_ScanDesc,
+						 indexstate->biss_ScanKeys, indexstate->biss_NumScanKeys,
+						 NULL, 0);
+	}
 
 	/*
 	 * all done.
@@ -359,13 +445,30 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 void
 ExecBitmapIndexScanEstimate(BitmapIndexScanState *node, ParallelContext *pcxt)
 {
+	EState		*estate = node->ss.ps.state;
 	Size		size;
 
+	if (pcxt->nworkers == 0)
+		return;
+
 	/*
-	 * Parallel bitmap index scans are not supported, but we still need to
-	 * store the scan's instrumentation in DSM during parallel query
+	 * Parallel-aware scans need space for the parallel scan descriptor and for
+	 * the per-worker bitmap sharing/partitioning state.
 	 */
-	if (!node->ss.ps.instrument || pcxt->nworkers == 0)
+	if (node->ss.ps.plan->parallel_aware)
+	{
+		node->biss_PscanLen =
+			index_parallelscan_estimate(node->biss_RelationDesc,
+										node->biss_NumScanKeys,
+										0,
+										estate->es_snapshot);
+		shm_toc_estimate_chunk(&pcxt->estimator, node->biss_PscanLen);
+		shm_toc_estimate_chunk(&pcxt->estimator,
+							   BitmapIndexScanSharedStateSize(pcxt->nworkers));
+		shm_toc_estimate_keys(&pcxt->estimator, 2);
+	}
+
+	if (!node->ss.ps.instrument)
 		return;
 
 	size = offsetof(SharedIndexScanInstrumentation, winstrument) +
@@ -377,17 +480,62 @@ ExecBitmapIndexScanEstimate(BitmapIndexScanState *node, ParallelContext *pcxt)
 /* ----------------------------------------------------------------
  *		ExecBitmapIndexScanInitializeDSM
  *
- *		Set up bitmap index scan shared instrumentation.
+ *		Set up shared state for a parallel-aware bitmap index scan.
  * ----------------------------------------------------------------
  */
 void
 ExecBitmapIndexScanInitializeDSM(BitmapIndexScanState *node,
 								 ParallelContext *pcxt)
 {
+	EState		*estate = node->ss.ps.state;
+	ParallelIndexScanDesc piscan;
+	SharedBitmapIndexState *sstate;
 	Size		size;
 
-	/* don't need this if not instrumenting or no workers */
-	if (!node->ss.ps.instrument || pcxt->nworkers == 0)
+	if (pcxt->nworkers == 0)
+		return;
+
+	if (node->ss.ps.plan->parallel_aware)
+	{
+		piscan = shm_toc_allocate(pcxt->toc, node->biss_PscanLen);
+		index_parallelscan_initialize(node->ss.ss_currentRelation,
+									  node->biss_RelationDesc,
+									  estate->es_snapshot,
+									  piscan);
+		shm_toc_insert(pcxt->toc,
+					   node->ss.ps.plan->plan_node_id,
+					   piscan);
+
+		size = BitmapIndexScanSharedStateSize(pcxt->nworkers);
+		sstate = shm_toc_allocate(pcxt->toc, size);
+		memset(sstate, 0, size);
+		sstate->max_participants = pcxt->nworkers + 1;
+		pg_atomic_init_u32(&sstate->next_participant_id, 0);
+		BarrierInit(&sstate->barrier, 0);
+		shm_toc_insert(pcxt->toc,
+					   node->ss.ps.plan->plan_node_id +
+					   PARALLEL_KEY_BITMAP_INDEX_OFFSET,
+					   sstate);
+		node->biss_ParallelState = sstate;
+
+		node->biss_ScanDesc =
+			index_beginscan_bitmap_parallel(node->biss_RelationDesc,
+										  estate->es_snapshot,
+										  node->biss_Instrument,
+										  node->biss_NumScanKeys,
+										  piscan);
+
+		/*
+		 * If no run-time keys to calculate or they are ready, go ahead and pass
+		 * the scankeys to the index AM.
+		 */
+		if (node->biss_NumRuntimeKeys == 0 || node->biss_RuntimeKeysReady)
+			index_rescan(node->biss_ScanDesc,
+						 node->biss_ScanKeys, node->biss_NumScanKeys,
+						 NULL, 0);
+	}
+
+	if (!node->ss.ps.instrument)
 		return;
 
 	size = offsetof(SharedIndexScanInstrumentation, winstrument) +
@@ -406,6 +554,35 @@ ExecBitmapIndexScanInitializeDSM(BitmapIndexScanState *node,
 }
 
 /* ----------------------------------------------------------------
+ *		ExecBitmapIndexScanReInitializeDSM
+ *
+ *		Reset shared state before beginning a fresh scan.
+ * ----------------------------------------------------------------
+ */
+void
+ExecBitmapIndexScanReInitializeDSM(BitmapIndexScanState *node,
+								   ParallelContext *pcxt)
+{
+	SharedBitmapIndexState *sstate = node->biss_ParallelState;
+	Size		size;
+
+	Assert(node->ss.ps.plan->parallel_aware);
+
+	if (node->biss_ScanDesc)
+		index_parallelrescan(node->biss_ScanDesc);
+
+	if (sstate == NULL)
+		return;
+
+	/* Clear the stored per-worker iterators from the previous scan. */
+	size = sstate->max_participants * sizeof(dsa_pointer);
+	memset(sstate->worker_tbmiter, 0, size);
+
+	pg_atomic_init_u32(&sstate->next_participant_id, 0);
+	BarrierInit(&sstate->barrier, 0);
+}
+
+/* ----------------------------------------------------------------
  *		ExecBitmapIndexScanInitializeWorker
  *
  *		Copy relevant information from TOC into planstate.
@@ -415,7 +592,38 @@ void
 ExecBitmapIndexScanInitializeWorker(BitmapIndexScanState *node,
 									ParallelWorkerContext *pwcxt)
 {
-	/* don't need this if not instrumenting */
+	EState		*estate = node->ss.ps.state;
+	ParallelIndexScanDesc piscan;
+	SharedBitmapIndexState *sstate;
+
+	if (node->ss.ps.plan->parallel_aware)
+	{
+		piscan = shm_toc_lookup(pwcxt->toc,
+								node->ss.ps.plan->plan_node_id,
+								false);
+		sstate = shm_toc_lookup(pwcxt->toc,
+								node->ss.ps.plan->plan_node_id +
+								PARALLEL_KEY_BITMAP_INDEX_OFFSET,
+								false);
+		node->biss_ParallelState = sstate;
+
+		node->biss_ScanDesc =
+			index_beginscan_bitmap_parallel(node->biss_RelationDesc,
+										  estate->es_snapshot,
+										  node->biss_Instrument,
+										  node->biss_NumScanKeys,
+										  piscan);
+
+		/*
+		 * If no run-time keys to calculate or they are ready, go ahead and pass
+		 * the scankeys to the index AM.
+		 */
+		if (node->biss_NumRuntimeKeys == 0 || node->biss_RuntimeKeysReady)
+			index_rescan(node->biss_ScanDesc,
+						 node->biss_ScanKeys, node->biss_NumScanKeys,
+						 NULL, 0);
+	}
+
 	if (!node->ss.ps.instrument)
 		return;
 
@@ -446,4 +654,93 @@ ExecBitmapIndexScanRetrieveInstrumentation(BitmapIndexScanState *node)
 		SharedInfo->num_workers * sizeof(IndexScanInstrumentation);
 	node->biss_SharedInfo = palloc(size);
 	memcpy(node->biss_SharedInfo, SharedInfo, size);
+}
+
+/*
+ * Compute the size of the SharedBitmapIndexState for a given number of
+ * requested workers.
+ */
+static Size
+BitmapIndexScanSharedStateSize(int nworkers)
+{
+	return add_size(offsetof(SharedBitmapIndexState, worker_tbmiter),
+					mul_size(nworkers + 1, sizeof(dsa_pointer)));
+}
+
+
+
+/*
+ * Given a full per-worker TIDBitmap built by a parallel-aware BitmapIndexScan,
+ * share it with all other workers and return a new TIDBitmap containing only
+ * the heap blocks assigned to this worker by a hash of the block number.
+ *
+ * The original TIDBitmap is freed here, after all workers have finished using
+ * the shared iterator state.
+ */
+static TIDBitmap *
+BitmapIndexScanPartition(BitmapIndexScanState *node, TIDBitmap *tbm)
+{
+	SharedBitmapIndexState *sstate = node->biss_ParallelState;
+	dsa_area   *dsa = node->ss.ps.state->es_query_dsa;
+	int			my_id;
+	int			total;
+	int			i;
+	dsa_pointer dp = InvalidDsaPointer;
+	TIDBitmap  *partition;
+
+	Assert(dsa != NULL);
+
+	my_id = pg_atomic_add_fetch_u32(&sstate->next_participant_id, 1) - 1;
+	Assert(my_id < sstate->max_participants);
+
+	/* Share our local bitmap, unless it is empty. */
+	if (!tbm_is_empty(tbm))
+		dp = tbm_prepare_shared_unordered_iterate(tbm);
+	sstate->worker_tbmiter[my_id] = dp;
+
+	/* Wait until every participant has stored its bitmap. */
+	BarrierArriveAndWait(&sstate->barrier, WAIT_EVENT_PARALLEL_BITMAP_SCAN);
+
+	total = BarrierParticipants(&sstate->barrier);
+	Assert(total > 0);
+
+	/* Build the per-worker partition. */
+	partition = tbm_create(work_mem * (Size) 1024, NULL);
+
+	for (i = 0; i < sstate->max_participants; i++)
+	{
+		dsa_pointer slot = sstate->worker_tbmiter[i];
+		TBMUnorderedIterator *iter;
+		TBMIterateResult tbmres;
+
+		if (!DsaPointerIsValid(slot))
+			continue;
+
+		/*
+		 * Scan the whole shared bitmap with a private cursor; we must not
+		 * use the joint shared cursor, or the participants would divide the
+		 * bitmap's pages among themselves instead of each scanning them all.
+		 *
+		 * Use the unsorted iterator since order doesn't matter for partition
+		 * assignment - this avoids the complex merge sort logic needed for
+		 * sorted iteration.
+		 */
+		iter = tbm_begin_shared_unordered_iterate(dsa, slot);
+
+		while (tbm_shared_unordered_iterate(iter, &tbmres))
+			if (murmurhash32(tbmres.blockno / 256) % (uint32) total == (uint32) my_id)
+				tbm_copy_page(partition, &tbmres);
+
+		tbm_end_shared_unordered_iterate(&iter);
+	}
+
+	/* Wait until everyone is done reading the shared bitmaps. */
+	BarrierArriveAndWait(&sstate->barrier, WAIT_EVENT_PARALLEL_BITMAP_SCAN);
+
+	/* Free the original bitmap and the shared iterator state we created. */
+	tbm_free(tbm);
+	sstate->worker_tbmiter[my_id] = InvalidDsaPointer;
+	BarrierDetach(&sstate->barrier);
+
+	return partition;
 }
