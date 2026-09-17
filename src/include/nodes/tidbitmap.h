@@ -97,6 +97,7 @@ extern int	tbm_extract_page_tuple(TBMIterateResult *iteritem,
 								   uint32 max_offsets);
 
 extern bool tbm_is_empty(const TIDBitmap *tbm);
+extern int tbm_get_entry_count(const TIDBitmap *tbm);
 
 extern TBMPrivateIterator *tbm_begin_private_iterate(TIDBitmap *tbm);
 extern dsa_pointer tbm_prepare_shared_iterate(TIDBitmap *tbm);
@@ -106,6 +107,9 @@ extern void tbm_end_private_iterate(TBMPrivateIterator *iterator);
 extern void tbm_end_shared_iterate(TBMSharedIterator *iterator);
 extern TBMSharedIterator *tbm_attach_shared_iterate(dsa_area *dsa,
 													dsa_pointer dp);
+extern dsa_pointer tbm_prepare_shared_iterate_multi_worker(dsa_area *dsa, 
+														   TIDBitmap **worker_bitmaps, 
+														   int nworkers);
 extern int	tbm_calculate_entries(Size maxbytes);
 
 extern TBMIterator tbm_begin_iterate(TIDBitmap *tbm,

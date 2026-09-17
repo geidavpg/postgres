@@ -329,6 +329,15 @@ btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		/* Now see if we need another primitive index scan */
 	} while (so->numArrayKeys && _bt_start_prim_scan(scan));
 
+	/*
+	 * If this is a parallel scan, we need to mark ourselves as done
+	 * when we've finished scanning our assigned portion of the index.
+	 * The parallel scan infrastructure in _bt_first and _bt_next already
+	 * handles the coordination of which pages each worker scans.
+	 */
+	if (scan->parallel_scan != NULL)
+		_bt_parallel_done(scan);
+
 	return ntids;
 }
 

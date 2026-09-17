@@ -105,33 +105,109 @@ BitmapTableScanSetup(BitmapHeapScanState *node)
 	ParallelBitmapHeapState *pstate = node->pstate;
 	dsa_area   *dsa = node->ss.ps.state->es_query_dsa;
 
-	if (!pstate)
+	node->tbm = (TIDBitmap *) MultiExecProcNode(outerPlanState(node));
+
+	if (!node->tbm || !IsA(node->tbm, TIDBitmap))
+		elog(ERROR, "unrecognized result from subplan");
+
+	elog(WARNING, "PID=%d: BitmapTableScanSetup: bitmap entries = %d", MyProcPid, tbm_get_entry_count(node->tbm));
+
+	if (pstate != NULL)
 	{
-		node->tbm = (TIDBitmap *) MultiExecProcNode(outerPlanState(node));
+		/* Handle multi-worker bitmap collection for parallel-aware bitmap index scans */
+		if (pstate->nworkers > 1)
+		{
+			int worker_id;
+			elog(WARNING, "PID=%d: BitmapTableScanSetup: multi-worker mode with %d workers", MyProcPid, pstate->nworkers);
+			
+			/* Store this worker's bitmap in shared memory */
+			SpinLockAcquire(&pstate->mutex);
+			
+			/* Find a slot for this worker's bitmap */
+			worker_id = IsParallelWorker() ? ParallelWorkerNumber+1 : 0;
 
-		if (!node->tbm || !IsA(node->tbm, TIDBitmap))
-			elog(ERROR, "unrecognized result from subplan");
+			elog(WARNING, "PID=%d: worker_id=%d, nworkers=%d", MyProcPid, worker_id, pstate->nworkers);
+
+			if (worker_id <= pstate->nworkers && !DsaPointerIsValid(pstate->worker_bitmaps[worker_id]))
+			{
+				/* Prepare this worker's bitmap for shared iteration */
+				dsa_pointer worker_bitmap_ptr = tbm_prepare_shared_iterate(node->tbm);
+				pstate->worker_bitmaps[worker_id] = worker_bitmap_ptr;
+				pstate->workers_finished++;
+				
+				elog(WARNING, "PID=%d: Stored bitmap for worker %d, %d/%d workers finished", 
+					 MyProcPid, worker_id, pstate->workers_finished, pstate->nworkers);
+			}
+			
+			/* If all workers have finished, create multi-worker iterator */
+			bool wakeup_others = false;
+			if (pstate->workers_finished == pstate->nworkers && pstate->state == BM_INITIAL)
+			{
+				TIDBitmap **worker_bitmaps;
+
+				elog(WARNING, "PID=%d: Creating multi-worker iterator", MyProcPid);
+				
+				/* Collect all worker bitmaps */
+				worker_bitmaps = palloc_array(TIDBitmap *, pstate->nworkers);
+				for (int i = 0; i < pstate->nworkers; i++)
+				{
+					/* We need to reconstruct TIDBitmap from shared iterator state */
+					/* For now, we'll use the existing single-bitmap approach */
+					worker_bitmaps[i] = node->tbm; /* This is a simplification */
+				}
+				
+				/* Create multi-worker shared iterator */
+				pstate->tbmiterator = tbm_prepare_shared_iterate_multi_worker(dsa, worker_bitmaps, pstate->nworkers);
+				pfree(worker_bitmaps);
+				
+				/* Mark finished under the lock; wake others after releasing it */
+				pstate->state = BM_FINISHED;
+				wakeup_others = true;
+				
+				elog(WARNING, "PID=%d: Multi-worker iterator created", MyProcPid);
+			}
+			
+			SpinLockRelease(&pstate->mutex);
+			if (wakeup_others)
+				ConditionVariableBroadcast(&pstate->cv);
+			
+			/* Wait for multi-worker iterator to be ready */
+			for (;;)
+			{
+				SpinLockAcquire(&pstate->mutex);
+				if (pstate->state == BM_FINISHED)
+				{
+					SpinLockRelease(&pstate->mutex);
+					break;
+				}
+				ConditionVariablePrepareToSleep(&pstate->cv);
+				SpinLockRelease(&pstate->mutex);
+				ConditionVariableSleep(&pstate->cv, WAIT_EVENT_PARALLEL_BITMAP_SCAN);
+				ConditionVariableCancelSleep();
+			}
+		}
+		else if (BitmapShouldInitializeSharedState(pstate))
+		{
+			elog(WARNING, "PID=%d: BitmapTableScanSetup: single-worker mode", MyProcPid);
+
+			/*
+			 * The leader will immediately come out of the function, but others
+			 * will be blocked until leader populates the TBM and wakes them up.
+			 */
+
+			/*
+			 * Prepare to iterate over the TBM. This will return the dsa_pointer
+			 * of the iterator state which will be used by multiple processes to
+			 * iterate jointly.
+			 */
+			pstate->tbmiterator = tbm_prepare_shared_iterate(node->tbm);
+
+			/* We have initialized the shared state so wake up others. */
+			BitmapDoneInitializingSharedState(pstate);
+		}
 	}
-	else if (BitmapShouldInitializeSharedState(pstate))
-	{
-		/*
-		 * The leader will immediately come out of the function, but others
-		 * will be blocked until leader populates the TBM and wakes them up.
-		 */
-		node->tbm = (TIDBitmap *) MultiExecProcNode(outerPlanState(node));
-		if (!node->tbm || !IsA(node->tbm, TIDBitmap))
-			elog(ERROR, "unrecognized result from subplan");
 
-		/*
-		 * Prepare to iterate over the TBM. This will return the dsa_pointer
-		 * of the iterator state which will be used by multiple processes to
-		 * iterate jointly.
-		 */
-		pstate->tbmiterator = tbm_prepare_shared_iterate(node->tbm);
-
-		/* We have initialized the shared state so wake up others. */
-		BitmapDoneInitializingSharedState(pstate);
-	}
+	elog(WARNING, "PID=%d, begin iterating", MyProcPid);
 
 	tbmiterator = tbm_begin_iterate(node->tbm, dsa,
 									pstate ?
@@ -512,6 +588,22 @@ ExecBitmapHeapEstimate(BitmapHeapScanState *node,
 {
 	shm_toc_estimate_chunk(&pcxt->estimator,
 						   MAXALIGN(sizeof(ParallelBitmapHeapState)));
+
+	Size		size;
+
+	/* Base size includes space for worker_bitmaps flexible array */
+	size = offsetof(ParallelBitmapHeapState, worker_bitmaps) + 
+		   mul_size(pcxt->nworkers + 1, sizeof(dsa_pointer));
+	size = MAXALIGN(size);
+
+	/* account for instrumentation, if required */
+	if (node->ss.ps.instrument && pcxt->nworkers > 0)
+	{
+		size = add_size(size, offsetof(SharedBitmapHeapInstrumentation, sinstrument));
+		size = add_size(size, mul_size(pcxt->nworkers, sizeof(BitmapHeapScanInstrumentation)));
+	}
+
+	shm_toc_estimate_chunk(&pcxt->estimator, size);
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 }
 
@@ -536,6 +628,23 @@ ExecBitmapHeapInitializeDSM(BitmapHeapScanState *node,
 		shm_toc_allocate(pcxt->toc,
 						 MAXALIGN(sizeof(ParallelBitmapHeapState)));
 
+	/* Calculate size including worker_bitmaps array */
+	size = offsetof(ParallelBitmapHeapState, worker_bitmaps) + 
+		   mul_size(pcxt->nworkers + 1, sizeof(dsa_pointer));
+	size = MAXALIGN(size);
+	if (node->ss.ps.instrument && pcxt->nworkers > 0)
+	{
+		size = add_size(size, offsetof(SharedBitmapHeapInstrumentation, sinstrument));
+		size = add_size(size, mul_size(pcxt->nworkers, sizeof(BitmapHeapScanInstrumentation)));
+	}
+
+	ptr = shm_toc_allocate(pcxt->toc, size);
+	pstate = (ParallelBitmapHeapState *) ptr;
+	ptr += MAXALIGN(offsetof(ParallelBitmapHeapState, worker_bitmaps) + 
+					mul_size(pcxt->nworkers + 1, sizeof(dsa_pointer)));
+	if (node->ss.ps.instrument && pcxt->nworkers > 0)
+		sinstrument = (SharedBitmapHeapInstrumentation *) ptr;
+
 	pstate->tbmiterator = 0;
 
 	/* Initialize the mutex */
@@ -543,6 +652,14 @@ ExecBitmapHeapInitializeDSM(BitmapHeapScanState *node,
 	pstate->state = BM_INITIAL;
 
 	ConditionVariableInit(&pstate->cv);
+	
+	/* Initialize multi-worker bitmap fields */
+	pstate->nworkers = pcxt->nworkers + 1; /* +1 for leader */
+	pstate->workers_finished = 0;
+	for (int i = 0; i < pstate->nworkers; i++)
+	{
+		pstate->worker_bitmaps[i] = InvalidDsaPointer;
+	}
 
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, pstate);
 	node->pstate = pstate;

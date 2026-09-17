@@ -1825,8 +1825,57 @@ typedef struct BitmapIndexScanState
 	struct IndexScanDescData *biss_ScanDesc;
 	IndexScanInstrumentation *biss_Instrument;
 	SharedIndexScanInstrumentation *biss_SharedInfo;
+	Size		biss_PscanLen;
+	
+	/* Support for multi-worker bitmap collection */
+	TIDBitmap **biss_WorkerBitmaps;	/* array of worker bitmaps */
+	int			biss_NumWorkers;	/* number of parallel workers */
+	dsa_pointer biss_MultiWorkerIterator;	/* shared multi-worker iterator */
 } BitmapIndexScanState;
 
+/* ----------------
+ *	 SharedBitmapState information
+ *
+ *		BM_INITIAL		TIDBitmap creation is not yet started, so first worker
+ *						to see this state will set the state to BM_INPROGRESS
+ *						and that process will be responsible for creating
+ *						TIDBitmap.
+ *		BM_INPROGRESS	TIDBitmap creation is in progress; workers need to
+ *						sleep until it's finished.
+ *		BM_FINISHED		TIDBitmap creation is done, so now all workers can
+ *						proceed to iterate over TIDBitmap.
+ * ----------------
+ */
+typedef enum
+{
+	BM_INITIAL,
+	BM_INPROGRESS,
+	BM_FINISHED,
+} SharedBitmapState;
+
+/* ----------------
+ *	 ParallelBitmapHeapState information
+ *		tbmiterator				iterator for scanning current pages
+ *		mutex					mutual exclusion for state
+ *		state					current state of the TIDBitmap
+ *		cv						conditional wait variable
+ *		worker_bitmaps			array of dsa_pointers to worker bitmaps
+ *		nworkers				number of parallel workers
+ *		workers_finished		number of workers that have finished bitmap creation
+ * ----------------
+ */
+typedef struct ParallelBitmapHeapState
+{
+	dsa_pointer tbmiterator;
+	slock_t		mutex;
+	SharedBitmapState state;
+	ConditionVariable cv;
+	
+	/* Support for multi-worker bitmap collection */
+	int			nworkers;
+	int			workers_finished;
+	dsa_pointer worker_bitmaps[FLEXIBLE_ARRAY_MEMBER];
+} ParallelBitmapHeapState;
 
 /* ----------------
  *	 BitmapHeapScanState information

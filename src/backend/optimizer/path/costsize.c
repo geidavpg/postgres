@@ -818,6 +818,8 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
 
 	path->path.startup_cost = startup_cost;
 	path->path.total_cost = startup_cost + run_cost;
+
+	elog(WARNING, "cost=%f, parallel=%d", path->path.total_cost, path->path.parallel_aware);
 }
 
 /*

@@ -3328,7 +3328,7 @@ create_bitmap_subplan(PlannerInfo *root, Path *bitmapqual,
 		plan->plan_rows =
 			clamp_row_est(ipath->indexselectivity * ipath->path.parent->tuples);
 		plan->plan_width = 0;	/* meaningless */
-		plan->parallel_aware = false;
+		plan->parallel_aware = ipath->path.parallel_aware;
 		plan->parallel_safe = ipath->path.parallel_safe;
 		/* Extract original index clauses, actual index quals, relevant ECs */
 		subquals = NIL;

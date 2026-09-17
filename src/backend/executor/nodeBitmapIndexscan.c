@@ -28,6 +28,7 @@
 #include "executor/nodeIndexscan.h"
 #include "miscadmin.h"
 #include "nodes/tidbitmap.h"
+#include "access/relscan.h"
 
 
 /* ----------------------------------------------------------------
@@ -54,6 +55,10 @@ MultiExecBitmapIndexScan(BitmapIndexScanState *node)
 	IndexScanDesc scandesc;
 	double		nTuples = 0;
 	bool		doscan;
+	EState	   *estate = node->ss.ps.state;
+	BitmapIndexScan *plan = (BitmapIndexScan *) node->ss.ps.plan;
+
+ elog(WARNING, "PID=%d: MultiExecBitmapIndexScan", MyProcPid);
 
 	/* must provide our own instrumentation support */
 	if (node->ss.ps.instrument)
@@ -63,6 +68,29 @@ MultiExecBitmapIndexScan(BitmapIndexScanState *node)
 	 * extract necessary information from index scan node
 	 */
 	scandesc = node->biss_ScanDesc;
+
+	/*
+	 * If we don't have a scan descriptor yet, we need to initialize one.
+	 * This happens when the scan is not parallel, or when we're serially
+	 * executing a scan that was planned to be parallel.
+	 */
+	if (scandesc == NULL)
+	{
+		scandesc = index_beginscan_bitmap(node->biss_RelationDesc,
+										  estate->es_snapshot,
+										  &node->biss_Instrument,
+										  node->biss_NumScanKeys);
+		node->biss_ScanDesc = scandesc;
+
+		/*
+		 * If no run-time keys to calculate or they are ready, go ahead and
+		 * pass the scankeys to the index AM.
+		 */
+		if (node->biss_NumRuntimeKeys == 0 || node->biss_RuntimeKeysReady)
+			index_rescan(scandesc,
+						 node->biss_ScanKeys, node->biss_NumScanKeys,
+						 NULL, 0);
+	}
 
 	/*
 	 * If we have runtime keys and they've not already been set up, do it now.
@@ -94,8 +122,7 @@ MultiExecBitmapIndexScan(BitmapIndexScanState *node)
 	{
 		/* XXX should we use less than work_mem for this? */
 		tbm = tbm_create(work_mem * (Size) 1024,
-						 ((BitmapIndexScan *) node->ss.ps.plan)->isshared ?
-						 node->ss.ps.state->es_query_dsa : NULL);
+						 plan->isshared ? estate->es_query_dsa : NULL);
 	}
 
 	/*
@@ -114,6 +141,7 @@ MultiExecBitmapIndexScan(BitmapIndexScanState *node)
 						 node->biss_ScanKeys, node->biss_NumScanKeys,
 						 NULL, 0);
 	}
+
 
 	/* must provide our own instrumentation support */
 	if (node->ss.ps.instrument)
@@ -248,7 +276,7 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	 * the heap relation throughout the execution of the plan tree.
 	 */
 
-	indexstate->ss.ss_currentRelation = NULL;
+	indexstate->ss.ss_currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
 	indexstate->ss.ss_currentScanDesc = NULL;
 
 	/*
@@ -327,21 +355,25 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 	/*
 	 * Initialize scan descriptor.
 	 */
+	 #if 0
 	indexstate->biss_ScanDesc =
 		index_beginscan_bitmap(indexstate->biss_RelationDesc,
 							   estate->es_snapshot,
 							   indexstate->biss_Instrument,
 							   indexstate->biss_NumScanKeys);
+							   #endif
 
 	/*
 	 * If no run-time keys to calculate, go ahead and pass the scankeys to the
 	 * index AM.
 	 */
+	 #if 0
 	if (indexstate->biss_NumRuntimeKeys == 0 &&
 		indexstate->biss_NumArrayKeys == 0)
 		index_rescan(indexstate->biss_ScanDesc,
 					 indexstate->biss_ScanKeys, indexstate->biss_NumScanKeys,
 					 NULL, 0);
+					 #endif
 
 	/*
 	 * all done.
@@ -359,18 +391,26 @@ ExecInitBitmapIndexScan(BitmapIndexScan *node, EState *estate, int eflags)
 void
 ExecBitmapIndexScanEstimate(BitmapIndexScanState *node, ParallelContext *pcxt)
 {
-	Size		size;
+	EState	   *estate = node->ss.ps.state;
+	bool		instrument = node->ss.ps.instrument != NULL;
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
 
-	/*
-	 * Parallel bitmap index scans are not supported, but we still need to
-	 * store the scan's instrumentation in DSM during parallel query
-	 */
-	if (!node->ss.ps.instrument || pcxt->nworkers == 0)
+	if (!instrument && !parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
+
+	if (pcxt->nworkers == 0)
 		return;
 
-	size = offsetof(SharedIndexScanInstrumentation, winstrument) +
-		pcxt->nworkers * sizeof(IndexScanInstrumentation);
-	shm_toc_estimate_chunk(&pcxt->estimator, size);
+	node->biss_PscanLen =
+		index_parallelscan_estimate(node->biss_RelationDesc,
+									node->biss_NumScanKeys, 0,
+									estate->es_snapshot,
+									instrument, parallel_aware,
+									pcxt->nworkers);
+	shm_toc_estimate_chunk(&pcxt->estimator, node->biss_PscanLen);
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 }
 
@@ -384,10 +424,19 @@ void
 ExecBitmapIndexScanInitializeDSM(BitmapIndexScanState *node,
 								 ParallelContext *pcxt)
 {
-	Size		size;
+	EState	   *estate = node->ss.ps.state;
+	ParallelIndexScanDesc piscan;
+	bool		instrument = node->ss.ps.instrument != NULL;
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
 
-	/* don't need this if not instrumenting or no workers */
-	if (!node->ss.ps.instrument || pcxt->nworkers == 0)
+	if (!instrument && !parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
+
+	/* don't need this if no workers */
+	if (pcxt->nworkers == 0)
 		return;
 
 	size = offsetof(SharedIndexScanInstrumentation, winstrument) +
@@ -400,9 +449,49 @@ ExecBitmapIndexScanInitializeDSM(BitmapIndexScanState *node,
 				   PARALLEL_KEY_SCAN_INSTRUMENT_OFFSET,
 				   node->biss_SharedInfo);
 
-	/* Each per-worker area must start out as zeroes */
-	memset(node->biss_SharedInfo, 0, size);
-	node->biss_SharedInfo->num_workers = pcxt->nworkers;
+	piscan = shm_toc_allocate(pcxt->toc, node->biss_PscanLen);
+	index_parallelscan_initialize(node->ss.ss_currentRelation,
+								  node->biss_RelationDesc,
+								  estate->es_snapshot,
+								  instrument, parallel_aware, pcxt->nworkers,
+								  &node->biss_SharedInfo, piscan);
+	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, piscan);
+
+	if (!parallel_aware)
+	{
+		/* Only here to initialize SharedInfo in DSM */
+		return;
+	}
+
+	node->biss_ScanDesc =
+		index_beginscan_parallel(node->ss.ss_currentRelation,
+										node->biss_RelationDesc,
+										&node->biss_Instrument,
+										node->biss_NumScanKeys, 0,
+										piscan);
+
+	/*
+	 * If no run-time keys to calculate or they are ready, go ahead and pass
+	 * the scankeys to the index AM.
+	 */
+	if (node->biss_NumRuntimeKeys == 0 || node->biss_RuntimeKeysReady)
+		index_rescan(node->biss_ScanDesc,
+					 node->biss_ScanKeys, node->biss_NumScanKeys,
+					 NULL, 0);
+}
+
+/* ----------------------------------------------------------------
+ *		ExecBitmapIndexScanReInitializeDSM
+ *
+ *		Reset shared state before beginning a fresh scan.
+ * ----------------------------------------------------------------
+ */
+void
+ExecBitmapIndexScanReInitializeDSM(BitmapIndexScanState *node,
+								   ParallelContext *pcxt)
+{
+	Assert(node->ss.ps.plan->parallel_aware);
+	index_parallelrescan(node->biss_ScanDesc);
 }
 
 /* ----------------------------------------------------------------
@@ -415,15 +504,49 @@ void
 ExecBitmapIndexScanInitializeWorker(BitmapIndexScanState *node,
 									ParallelWorkerContext *pwcxt)
 {
-	/* don't need this if not instrumenting */
-	if (!node->ss.ps.instrument)
-		return;
+	ParallelIndexScanDesc piscan;
+	bool		instrument = node->ss.ps.instrument != NULL;
+	bool		parallel_aware = node->ss.ps.plan->parallel_aware;
 
 	node->biss_SharedInfo = (SharedIndexScanInstrumentation *)
 		shm_toc_lookup(pwcxt->toc,
 					   node->ss.ps.plan->plan_node_id +
 					   PARALLEL_KEY_SCAN_INSTRUMENT_OFFSET,
 					   false);
+
+	if (!instrument && !parallel_aware)
+	{
+		/* No DSM required by the scan */
+		return;
+	}
+
+	piscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
+
+	if (instrument)
+		node->biss_SharedInfo = (SharedIndexScanInstrumentation *)
+			OffsetToPointer(piscan, piscan->ps_offset_ins);
+
+	if (!parallel_aware)
+	{
+		/* Only here to set up worker node's SharedInfo */
+		return;
+	}
+
+	node->biss_ScanDesc =
+		index_beginscan_parallel(node->ss.ss_currentRelation,
+										node->biss_RelationDesc,
+										&node->biss_Instrument,
+										node->biss_NumScanKeys, 0,
+										piscan);
+
+	/*
+	 * If no run-time keys to calculate or they are ready, go ahead and pass
+	 * the scankeys to the index AM.
+	 */
+	if (node->biss_NumRuntimeKeys == 0 || node->biss_RuntimeKeysReady)
+		index_rescan(node->biss_ScanDesc,
+					 node->biss_ScanKeys, node->biss_NumScanKeys,
+					 NULL, 0);
 }
 
 /* ----------------------------------------------------------------

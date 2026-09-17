@@ -176,6 +176,18 @@ struct TBMPrivateIterator
 };
 
 /*
+ * Information about a single worker's bitmap for multi-worker iteration
+ */
+typedef struct TBMWorkerInfo
+{
+	dsa_pointer pagetable;		/* dsa pointer to worker's PTEntryArray */
+	dsa_pointer spages;			/* dsa pointer to worker's page array */
+	dsa_pointer schunks;		/* dsa pointer to worker's chunk array */
+	int			npages;			/* number of exact entries for this worker */
+	int			nchunks;		/* number of lossy entries for this worker */
+} TBMWorkerInfo;
+
+/*
  * Holds the shared members of the iterator so that multiple processes
  * can jointly iterate.
  */
@@ -188,10 +200,15 @@ typedef struct TBMSharedIteratorState
 	dsa_pointer pagetable;		/* dsa pointers to head of pagetable data */
 	dsa_pointer spages;			/* dsa pointer to page array */
 	dsa_pointer schunks;		/* dsa pointer to chunk array */
+	
 	LWLock		lock;			/* lock to protect below members */
 	int			spageptr;		/* next spages index */
 	int			schunkptr;		/* next schunks index */
 	int			schunkbit;		/* next bit to check in current schunk */
+	
+	/* Support for multiple parallel worker bitmaps */
+	int			nworkers;		/* number of parallel workers */
+	TBMWorkerInfo worker_info[FLEXIBLE_ARRAY_MEMBER];	/* info for each worker */
 } TBMSharedIteratorState;
 
 /*
@@ -204,15 +221,41 @@ typedef struct PTIterationArray
 } PTIterationArray;
 
 /*
+ * Worker bitmap state for merge-sort iteration
+ */
+typedef struct TBMWorkerState
+{
+	PTEntryArray *ptbase;		/* pagetable element array for this worker */
+	PTIterationArray *ptpages;	/* sorted exact page index list for this worker */
+	PTIterationArray *ptchunks; /* sorted lossy page index list for this worker */
+	int			npages;			/* number of pages for this worker */
+	int			nchunks;		/* number of chunks for this worker */
+	int			spageptr;		/* current position in spages for this worker */
+	int			schunkptr;		/* current position in schunks for this worker */
+	int			schunkbit;		/* current bit in current chunk for this worker */
+	
+	/* Current page cache for merge-sort */
+	BlockNumber current_blockno;	/* current cached page block number */
+	bool		current_lossy;		/* is current page lossy? */
+	bool		current_recheck;	/* does current page need recheck? */
+	void	   *current_internal_page;	/* current page's internal page pointer */
+	bool		current_valid;		/* is current page cache valid? */
+} TBMWorkerState;
+
+/*
  * same as TBMPrivateIterator, but it is used for joint iteration, therefore
  * this also holds a reference to the shared state.
  */
 struct TBMSharedIterator
 {
 	TBMSharedIteratorState *state;	/* shared state */
-	PTEntryArray *ptbase;		/* pagetable element array */
-	PTIterationArray *ptpages;	/* sorted exact page index list */
-	PTIterationArray *ptchunks; /* sorted lossy page index list */
+	PTEntryArray *ptbase;		/* pagetable element array (legacy, for compatibility) */
+	PTIterationArray *ptpages;	/* sorted exact page index list (legacy, for compatibility) */
+	PTIterationArray *ptchunks; /* sorted lossy page index list (legacy, for compatibility) */
+	
+	/* Support for multiple parallel worker bitmaps */
+	int			nworkers;		/* number of parallel workers */
+	TBMWorkerState *workers;	/* array of worker states for merge-sort */
 };
 
 /* Local function prototypes */
@@ -228,6 +271,9 @@ static void tbm_lossify(TIDBitmap *tbm);
 static int	tbm_comparator(const void *left, const void *right);
 static int	tbm_shared_comparator(const void *left, const void *right,
 								  void *arg);
+static BlockNumber tbm_get_next_worker_page(TBMWorkerState *worker, bool *lossy, bool *recheck, void **internal_page);
+static void tbm_advance_worker_schunkbit(TBMWorkerState *worker, PagetableEntry *chunk);
+static void tbm_advance_worker_to_next_page(TBMWorkerState *worker);
 
 /* define hashtable mapping block numbers to PagetableEntry's */
 #define SH_USE_NONDEFAULT_ALLOCATOR
@@ -659,6 +705,12 @@ tbm_is_empty(const TIDBitmap *tbm)
 	return (tbm->nentries == 0);
 }
 
+int
+tbm_get_entry_count(const TIDBitmap *tbm)
+{
+	return tbm->nentries;
+}
+
 /*
  * tbm_begin_private_iterate - prepare to iterate through a TIDBitmap
  *
@@ -889,6 +941,72 @@ tbm_prepare_shared_iterate(TIDBitmap *tbm)
 }
 
 /*
+ * tbm_prepare_shared_iterate_multi_worker - prepare shared iteration state for multiple worker bitmaps.
+ *
+ * This function creates a shared iterator state that can merge-sort across
+ * multiple worker bitmaps from parallel bitmap index scans.
+ */
+dsa_pointer
+tbm_prepare_shared_iterate_multi_worker(dsa_area *dsa, TIDBitmap **worker_bitmaps, int nworkers)
+{
+	dsa_pointer dp;
+	TBMSharedIteratorState *istate;
+	Size		size;
+
+	Assert(dsa != NULL);
+	Assert(nworkers > 0);
+
+	/*
+	 * Allocate TBMSharedIteratorState from DSA with space for worker info
+	 */
+	size = offsetof(TBMSharedIteratorState, worker_info) + 
+		   nworkers * sizeof(TBMWorkerInfo);
+	dp = dsa_allocate0(dsa, size);
+	istate = dsa_get_address(dsa, dp);
+
+	/*
+	 * Initialize the shared state for multi-worker iteration
+	 */
+	istate->nworkers = nworkers;
+	for (int i = 0; i < nworkers; i++)
+	{
+		TIDBitmap *tbm = worker_bitmaps[i];
+		TBMWorkerInfo *winfo = &istate->worker_info[i];
+		
+		/* Prepare each worker's bitmap for shared iteration */
+		if (tbm->iterating == TBM_NOT_ITERATING)
+		{
+			/* Convert the worker's bitmap to shared iteration format */
+			tbm_prepare_shared_iterate(tbm);
+		}
+		
+		/* Store worker information */
+		winfo->pagetable = tbm->dsapagetable;
+		winfo->spages = tbm->ptpages;
+		winfo->schunks = tbm->ptchunks;
+		winfo->npages = tbm->npages;
+		winfo->nchunks = tbm->nchunks;
+	}
+
+	/* Initialize the iterator lock */
+	LWLockInitialize(&istate->lock, LWTRANCHE_SHARED_TIDBITMAP);
+
+	/* Initialize shared iterator state (not used in multi-worker mode) */
+	istate->nentries = 0;
+	istate->maxentries = 0;
+	istate->npages = 0;
+	istate->nchunks = 0;
+	istate->pagetable = InvalidDsaPointer;
+	istate->spages = InvalidDsaPointer;
+	istate->schunks = InvalidDsaPointer;
+	istate->schunkbit = 0;
+	istate->schunkptr = 0;
+	istate->spageptr = 0;
+
+	return dp;
+}
+
+/*
  * tbm_extract_page_tuple - extract the tuple offsets from a page
  *
  * Returns the number of offsets it filled in if <= max_offsets. Otherwise,
@@ -947,6 +1065,99 @@ tbm_advance_schunkbit(PagetableEntry *chunk, int *schunkbitp)
 	}
 
 	*schunkbitp = schunkbit;
+}
+
+/*
+ * tbm_advance_worker_schunkbit - Advance the schunkbit for a worker
+ */
+static void
+tbm_advance_worker_schunkbit(TBMWorkerState *worker, PagetableEntry *chunk)
+{
+	tbm_advance_schunkbit(chunk, &worker->schunkbit);
+}
+
+/*
+ * tbm_get_next_worker_page - Get the next page from a worker's bitmap
+ *
+ * Returns InvalidBlockNumber if this worker has no more pages.
+ * Sets lossy, recheck, and internal_page appropriately.
+ */
+static BlockNumber
+tbm_get_next_worker_page(TBMWorkerState *worker, bool *lossy, bool *recheck, void **internal_page)
+{
+	PagetableEntry *ptbase = worker->ptbase->ptentry;
+	int		   *idxpages = worker->ptpages ? worker->ptpages->index : NULL;
+	int		   *idxchunks = worker->ptchunks ? worker->ptchunks->index : NULL;
+	int			npages = worker->npages;
+	int			nchunks = worker->nchunks;
+
+	/*
+	 * If lossy chunk pages remain, make sure we've advanced schunkptr/
+	 * schunkbit to the next set bit.
+	 */
+	while (worker->schunkptr < nchunks)
+	{
+		PagetableEntry *chunk = &ptbase[idxchunks[worker->schunkptr]];
+
+		tbm_advance_worker_schunkbit(worker, chunk);
+		if (worker->schunkbit < PAGES_PER_CHUNK)
+			break;
+		/* advance to next chunk */
+		worker->schunkptr++;
+		worker->schunkbit = 0;
+	}
+
+	/*
+	 * If both chunk and per-page data remain, must output the numerically
+	 * earlier page.
+	 */
+	if (worker->schunkptr < nchunks)
+	{
+		PagetableEntry *chunk = &ptbase[idxchunks[worker->schunkptr]];
+		BlockNumber chunk_blockno;
+
+		chunk_blockno = chunk->blockno + worker->schunkbit;
+
+		if (worker->spageptr >= npages ||
+			chunk_blockno < ptbase[idxpages[worker->spageptr]].blockno)
+		{
+			/* Return a lossy page indicator from the chunk */
+			*lossy = true;
+			*recheck = true;
+			*internal_page = NULL;
+			worker->schunkbit++;
+			return chunk_blockno;
+		}
+	}
+
+	if (worker->spageptr < npages)
+	{
+		PagetableEntry *page = &ptbase[idxpages[worker->spageptr]];
+
+		*internal_page = page;
+		*lossy = false;
+		*recheck = page->recheck;
+		worker->spageptr++;
+		return page->blockno;
+	}
+
+	/* Nothing more in this worker's bitmap */
+	return InvalidBlockNumber;
+}
+
+/*
+ * tbm_advance_worker_to_next_page - Advance a worker to its next page
+ *
+ * Updates the worker's current page cache with the next available page.
+ */
+static void
+tbm_advance_worker_to_next_page(TBMWorkerState *worker)
+{
+	worker->current_blockno = tbm_get_next_worker_page(worker, 
+													   &worker->current_lossy,
+													   &worker->current_recheck,
+													   &worker->current_internal_page);
+	worker->current_valid = BlockNumberIsValid(worker->current_blockno);
 }
 
 /*
@@ -1049,11 +1260,70 @@ tbm_private_iterate(TBMPrivateIterator *iterator, TBMIterateResult *tbmres)
  *	As above, but this will iterate using an iterator which is shared
  *	across multiple processes.  We need to acquire the iterator LWLock,
  *	before accessing the shared members.
+ *
+ *	For parallel bitmap index scans, this performs a merge-sort across
+ *	multiple worker bitmaps to return pages in sorted order.
  */
 bool
 tbm_shared_iterate(TBMSharedIterator *iterator, TBMIterateResult *tbmres)
 {
 	TBMSharedIteratorState *istate = iterator->state;
+
+	/* Acquire the LWLock before accessing the shared members */
+	LWLockAcquire(&istate->lock, LW_EXCLUSIVE);
+
+	/*
+	 * If we have multiple workers (parallel bitmap index scan), perform
+	 * merge-sort across all worker bitmaps.
+	 */
+	if (iterator->nworkers > 1)
+	{
+		BlockNumber min_blockno = InvalidBlockNumber;
+		int			min_worker = -1;
+
+		/* Find the worker with the smallest current block number */
+		for (int i = 0; i < iterator->nworkers; i++)
+		{
+			TBMWorkerState *worker = &iterator->workers[i];
+			
+			/* Ensure worker has a current page cached */
+			if (!worker->current_valid)
+				tbm_advance_worker_to_next_page(worker);
+			
+			if (worker->current_valid && 
+				(!BlockNumberIsValid(min_blockno) || worker->current_blockno < min_blockno))
+			{
+				min_blockno = worker->current_blockno;
+				min_worker = i;
+			}
+		}
+
+		if (BlockNumberIsValid(min_blockno))
+		{
+			TBMWorkerState *worker = &iterator->workers[min_worker];
+			
+			/* Return the page from the worker with the smallest block number */
+			tbmres->blockno = worker->current_blockno;
+			tbmres->lossy = worker->current_lossy;
+			tbmres->recheck = worker->current_recheck;
+			tbmres->internal_page = worker->current_internal_page;
+
+			/* Advance this worker to its next page */
+			tbm_advance_worker_to_next_page(worker);
+
+			LWLockRelease(&istate->lock);
+			return true;
+		}
+
+		/* No more pages from any worker */
+		LWLockRelease(&istate->lock);
+		tbmres->blockno = InvalidBlockNumber;
+		return false;
+	}
+
+	/*
+	 * Legacy single-bitmap iteration (for backward compatibility)
+	 */
 	PagetableEntry *ptbase = NULL;
 	int		   *idxpages = NULL;
 	int		   *idxchunks = NULL;
@@ -1064,9 +1334,6 @@ tbm_shared_iterate(TBMSharedIterator *iterator, TBMIterateResult *tbmres)
 		idxpages = iterator->ptpages->index;
 	if (iterator->ptchunks != NULL)
 		idxchunks = iterator->ptchunks->index;
-
-	/* Acquire the LWLock before accessing the shared members */
-	LWLockAcquire(&istate->lock, LW_EXCLUSIVE);
 
 	/*
 	 * If lossy chunk pages remain, make sure we've advanced schunkptr/
@@ -1158,6 +1425,8 @@ tbm_end_private_iterate(TBMPrivateIterator *iterator)
 void
 tbm_end_shared_iterate(TBMSharedIterator *iterator)
 {
+	if (iterator->workers)
+		pfree(iterator->workers);
 	pfree(iterator);
 }
 
@@ -1474,12 +1743,59 @@ tbm_attach_shared_iterate(dsa_area *dsa, dsa_pointer dp)
 
 	iterator->state = istate;
 
-	iterator->ptbase = dsa_get_address(dsa, istate->pagetable);
+	/*
+	 * Handle multi-worker case (parallel bitmap index scans)
+	 */
+	if (istate->nworkers > 1)
+	{
+		iterator->nworkers = istate->nworkers;
+		iterator->workers = palloc0_array(TBMWorkerState, istate->nworkers);
 
-	if (istate->npages)
-		iterator->ptpages = dsa_get_address(dsa, istate->spages);
-	if (istate->nchunks)
-		iterator->ptchunks = dsa_get_address(dsa, istate->schunks);
+		/* Initialize each worker state */
+		for (int i = 0; i < istate->nworkers; i++)
+		{
+			TBMWorkerState *worker = &iterator->workers[i];
+			TBMWorkerInfo *winfo = &istate->worker_info[i];
+			
+			/* Get the worker's pagetable and arrays */
+			worker->ptbase = dsa_get_address(dsa, winfo->pagetable);
+			worker->npages = winfo->npages;
+			worker->nchunks = winfo->nchunks;
+			if (winfo->npages > 0)
+				worker->ptpages = dsa_get_address(dsa, winfo->spages);
+			else
+				worker->ptpages = NULL;
+			if (winfo->nchunks > 0)
+				worker->ptchunks = dsa_get_address(dsa, winfo->schunks);
+			else
+				worker->ptchunks = NULL;
+			
+			/* Initialize worker iteration state */
+			worker->spageptr = 0;
+			worker->schunkptr = 0;
+			worker->schunkbit = 0;
+			worker->current_valid = false;
+			worker->current_blockno = InvalidBlockNumber;
+		}
+		
+		/* Legacy fields not used in multi-worker mode */
+		iterator->ptbase = NULL;
+		iterator->ptpages = NULL;
+		iterator->ptchunks = NULL;
+	}
+	else
+	{
+		/* Legacy single-bitmap mode */
+		iterator->nworkers = 0;
+		iterator->workers = NULL;
+		
+		iterator->ptbase = dsa_get_address(dsa, istate->pagetable);
+
+		if (istate->npages)
+			iterator->ptpages = dsa_get_address(dsa, istate->spages);
+		if (istate->nchunks)
+			iterator->ptchunks = dsa_get_address(dsa, istate->schunks);
+	}
 
 	return iterator;
 }
