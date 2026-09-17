@@ -228,6 +228,7 @@ RESET enable_hashjoin;
 
 -- Test parallel plans with Memoize
 SET min_parallel_table_scan_size TO 0;
+SET min_parallel_index_scan_size TO 0;
 SET parallel_setup_cost TO 0;
 SET parallel_tuple_cost TO 0;
 SET max_parallel_workers_per_gather TO 2;
@@ -246,6 +247,7 @@ WHERE t1.unique1 < 1000;
 RESET max_parallel_workers_per_gather;
 RESET parallel_tuple_cost;
 RESET parallel_setup_cost;
+RESET min_parallel_index_scan_size;
 RESET min_parallel_table_scan_size;
 
 -- Ensure memoize works for ANTI joins

@@ -1193,8 +1193,9 @@ create_bitmap_and_path(PlannerInfo *root,
 
 	/*
 	 * Identify the required outer rels as the union of what the child paths
-	 * depend on.  (Alternatively, we could insist that the caller pass this
-	 * in, but it's more convenient and reliable to compute it here.)
+	 * depend on, and propagate parallel-aware from children.  If any child is
+	 * parallel-aware, this AND must be too, because a parallel-aware child
+	 * can only appear inside a parallel-aware plan.
 	 */
 	foreach(lc, bitmapquals)
 	{
@@ -1202,19 +1203,22 @@ create_bitmap_and_path(PlannerInfo *root,
 
 		required_outer = bms_add_members(required_outer,
 										 PATH_REQ_OUTER(bitmapqual));
+		if (bitmapqual->parallel_aware)
+		{
+			pathnode->path.parallel_aware = true;
+			if (bitmapqual->parallel_workers > pathnode->path.parallel_workers)
+				pathnode->path.parallel_workers = bitmapqual->parallel_workers;
+		}
 	}
 	pathnode->path.param_info = get_baserel_parampathinfo(root, rel,
 														  required_outer);
 
 	/*
-	 * Currently, a BitmapHeapPath, BitmapAndPath, or BitmapOrPath will be
-	 * parallel-safe if and only if rel->consider_parallel is set.  So, we can
-	 * set the flag for this path based only on the relation-level flag,
-	 * without actually iterating over the list of children.
+	 * A BitmapHeapPath, BitmapAndPath, or BitmapOrPath will be parallel-safe if
+	 * and only if rel->consider_parallel is set.  If we found any
+	 * parallel-aware children above, this path must be parallel-aware as well.
 	 */
-	pathnode->path.parallel_aware = false;
 	pathnode->path.parallel_safe = rel->consider_parallel;
-	pathnode->path.parallel_workers = 0;
 
 	pathnode->path.pathkeys = NIL;	/* always unordered */
 
@@ -1245,8 +1249,9 @@ create_bitmap_or_path(PlannerInfo *root,
 
 	/*
 	 * Identify the required outer rels as the union of what the child paths
-	 * depend on.  (Alternatively, we could insist that the caller pass this
-	 * in, but it's more convenient and reliable to compute it here.)
+	 * depend on, and propagate parallel-aware from children.  If any child is
+	 * parallel-aware, this OR must be too, because a parallel-aware child can
+	 * only appear inside a parallel-aware plan.
 	 */
 	foreach(lc, bitmapquals)
 	{
@@ -1254,19 +1259,22 @@ create_bitmap_or_path(PlannerInfo *root,
 
 		required_outer = bms_add_members(required_outer,
 										 PATH_REQ_OUTER(bitmapqual));
+		if (bitmapqual->parallel_aware)
+		{
+			pathnode->path.parallel_aware = true;
+			if (bitmapqual->parallel_workers > pathnode->path.parallel_workers)
+				pathnode->path.parallel_workers = bitmapqual->parallel_workers;
+		}
 	}
 	pathnode->path.param_info = get_baserel_parampathinfo(root, rel,
 														  required_outer);
 
 	/*
-	 * Currently, a BitmapHeapPath, BitmapAndPath, or BitmapOrPath will be
-	 * parallel-safe if and only if rel->consider_parallel is set.  So, we can
-	 * set the flag for this path based only on the relation-level flag,
-	 * without actually iterating over the list of children.
+	 * A BitmapHeapPath, BitmapAndPath, or BitmapOrPath will be parallel-safe if
+	 * and only if rel->consider_parallel is set.  If we found any
+	 * parallel-aware children above, this path must be parallel-aware as well.
 	 */
-	pathnode->path.parallel_aware = false;
 	pathnode->path.parallel_safe = rel->consider_parallel;
-	pathnode->path.parallel_workers = 0;
 
 	pathnode->path.pathkeys = NIL;	/* always unordered */
 

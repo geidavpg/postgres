@@ -23,6 +23,7 @@ extern void ExecEndBitmapIndexScan(BitmapIndexScanState *node);
 extern void ExecReScanBitmapIndexScan(BitmapIndexScanState *node);
 extern void ExecBitmapIndexScanEstimate(BitmapIndexScanState *node, ParallelContext *pcxt);
 extern void ExecBitmapIndexScanInitializeDSM(BitmapIndexScanState *node, ParallelContext *pcxt);
+extern void ExecBitmapIndexScanReInitializeDSM(BitmapIndexScanState *node, ParallelContext *pcxt);
 extern void ExecBitmapIndexScanInitializeWorker(BitmapIndexScanState *node,
 												ParallelWorkerContext *pwcxt);
 extern void ExecBitmapIndexScanRetrieveInstrumentation(BitmapIndexScanState *node);

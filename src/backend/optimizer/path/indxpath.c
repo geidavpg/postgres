@@ -103,11 +103,13 @@ static bool eclass_already_used(EquivalenceClass *parent_ec, Relids oldrelids,
 static void get_index_paths(PlannerInfo *root, RelOptInfo *rel,
 							IndexOptInfo *index, IndexClauseSet *clauses,
 							List **bitindexpaths);
-static List *build_index_paths(PlannerInfo *root, RelOptInfo *rel,
+static void build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 							   IndexOptInfo *index, IndexClauseSet *clauses,
 							   bool useful_predicate,
 							   ScanTypeControl scantype,
-							   bool *skip_nonnative_saop);
+							   bool *skip_nonnative_saop,
+							   List **paths,
+							   List **partial_paths);
 static List *build_paths_for_OR(PlannerInfo *root, RelOptInfo *rel,
 								List *clauses, List *other_clauses);
 static List *generate_bitmap_or_paths(PlannerInfo *root, RelOptInfo *rel,
@@ -716,19 +718,23 @@ get_index_paths(PlannerInfo *root, RelOptInfo *rel,
 				IndexOptInfo *index, IndexClauseSet *clauses,
 				List **bitindexpaths)
 {
-	List	   *indexpaths;
 	bool		skip_nonnative_saop = false;
 	ListCell   *lc;
+	List	   *paths = NIL;
+	List	   *partial_paths = NIL;
+	List	   *saoppaths = NIL;
 
 	/*
 	 * Build simple index paths using the clauses.  Allow ScalarArrayOpExpr
 	 * clauses only if the index AM supports them natively.
 	 */
-	indexpaths = build_index_paths(root, rel,
-								   index, clauses,
-								   index->predOK,
-								   ST_ANYSCAN,
-								   &skip_nonnative_saop);
+	build_index_paths(root, rel,
+					  index, clauses,
+					  index->predOK,
+					  ST_ANYSCAN,
+					  &skip_nonnative_saop,
+					  &paths,
+					  &partial_paths);
 
 	/*
 	 * Submit all the ones that can form plain IndexScan plans to add_path. (A
@@ -742,17 +748,31 @@ get_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	 * only interested in paths that have some selectivity; we should discard
 	 * anything that was generated solely for ordering purposes.
 	 */
-	foreach(lc, indexpaths)
+	foreach(lc, paths)
 	{
 		IndexPath  *ipath = (IndexPath *) lfirst(lc);
 
 		if (index->amhasgettuple)
-			add_path(rel, (Path *) ipath);
+				add_path(rel, (Path *) ipath);
 
 		if (index->amhasgetbitmap &&
 			(ipath->path.pathkeys == NIL ||
 			 ipath->indexselectivity < 1.0))
 			*bitindexpaths = lappend(*bitindexpaths, ipath);
+	}
+
+	/*
+	 * Partial paths generated above are intended only for plain parallel
+	 * index scans; do not reuse them as bitmap-qual children.  Bitmap-qual
+	 * parallelism is represented at the BitmapHeapPath level, or by building
+	 * a separate parallel-aware bitmapqual tree when needed.
+	 */
+	foreach(lc, partial_paths)
+	{
+		IndexPath  *ipath = (IndexPath *) lfirst(lc);
+
+		if (index->amhasgettuple)
+			add_partial_path(rel, (Path *) ipath);
 	}
 
 	/*
@@ -762,12 +782,14 @@ get_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	 */
 	if (skip_nonnative_saop)
 	{
-		indexpaths = build_index_paths(root, rel,
-									   index, clauses,
-									   false,
-									   ST_BITMAPSCAN,
-									   NULL);
-		*bitindexpaths = list_concat(*bitindexpaths, indexpaths);
+		build_index_paths(root, rel,
+						  index, clauses,
+						  false,
+						  ST_BITMAPSCAN,
+						  NULL,
+						  &saoppaths,
+						  NULL);
+		*bitindexpaths = list_concat(*bitindexpaths, saoppaths);
 	}
 }
 
@@ -805,14 +827,15 @@ get_index_paths(PlannerInfo *root, RelOptInfo *rel,
  * 'scantype' indicates whether we need plain or bitmap scan support
  * 'skip_nonnative_saop' indicates whether to accept SAOP if index AM doesn't
  */
-static List *
+void
 build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 				  IndexOptInfo *index, IndexClauseSet *clauses,
 				  bool useful_predicate,
 				  ScanTypeControl scantype,
-				  bool *skip_nonnative_saop)
+				  bool *skip_nonnative_saop,
+				  List **paths,
+				  List **partial_paths)
 {
-	List	   *result = NIL;
 	IndexPath  *ipath;
 	List	   *index_clauses;
 	Relids		outer_relids;
@@ -835,11 +858,11 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	{
 		case ST_INDEXSCAN:
 			if (!index->amhasgettuple)
-				return NIL;
+				return;
 			break;
 		case ST_BITMAPSCAN:
 			if (!index->amhasgetbitmap)
-				return NIL;
+				return;
 			break;
 		case ST_ANYSCAN:
 			/* either or both are OK */
@@ -898,7 +921,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 		 * clauses.)
 		 */
 		if (index_clauses == NIL && !index->amoptionalkey)
-			return NIL;
+			return;
 	}
 
 	/* We do not want the index's rel itself listed in outer_relids */
@@ -975,15 +998,16 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 								  outer_relids,
 								  loop_count,
 								  false);
-		result = lappend(result, ipath);
+		*paths = lappend(*paths, ipath);
 
 		/*
 		 * If appropriate, consider parallel index scan.  We don't allow
 		 * parallel index scan for bitmap index scans.
 		 */
-		if (index->amcanparallel &&
+		if (index->amcanparallel && index->amhasgettuple &&
 			rel->consider_parallel && outer_relids == NULL &&
-			scantype != ST_BITMAPSCAN)
+			scantype != ST_BITMAPSCAN &&
+			partial_paths != NULL)
 		{
 			ipath = create_index_path(root, index,
 									  index_clauses,
@@ -1001,7 +1025,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			 * parallel workers, just free it.
 			 */
 			if (ipath->path.parallel_workers > 0)
-				add_partial_path(rel, (Path *) ipath);
+				*partial_paths = lappend(*partial_paths, ipath);
 			else
 				pfree(ipath);
 		}
@@ -1028,12 +1052,13 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 									  outer_relids,
 									  loop_count,
 									  false);
-			result = lappend(result, ipath);
+			*paths = lappend(*paths, ipath);
 
 			/* If appropriate, consider parallel index scan */
-			if (index->amcanparallel &&
+			if (index->amcanparallel && index->amhasgettuple &&
 				rel->consider_parallel && outer_relids == NULL &&
-				scantype != ST_BITMAPSCAN)
+				scantype != ST_BITMAPSCAN &&
+				partial_paths != NULL)
 			{
 				ipath = create_index_path(root, index,
 										  index_clauses,
@@ -1051,14 +1076,12 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 				 * using parallel workers, just free it.
 				 */
 				if (ipath->path.parallel_workers > 0)
-					add_partial_path(rel, (Path *) ipath);
+					*partial_paths = lappend(*partial_paths, ipath);
 				else
 					pfree(ipath);
 			}
 		}
 	}
-
-	return result;
 }
 
 /*
@@ -1099,7 +1122,7 @@ build_paths_for_OR(PlannerInfo *root, RelOptInfo *rel,
 	{
 		IndexOptInfo *index = (IndexOptInfo *) lfirst(lc);
 		IndexClauseSet clauseset;
-		List	   *indexpaths;
+		List	   *indexpaths = NIL;
 		bool		useful_predicate;
 
 		/* Ignore index if it doesn't support bitmap scans */
@@ -1160,11 +1183,13 @@ build_paths_for_OR(PlannerInfo *root, RelOptInfo *rel,
 		/*
 		 * Construct paths if possible.
 		 */
-		indexpaths = build_index_paths(root, rel,
-									   index, &clauseset,
-									   useful_predicate,
-									   ST_BITMAPSCAN,
-									   NULL);
+		build_index_paths(root, rel,
+						  index, &clauseset,
+						  useful_predicate,
+						  ST_BITMAPSCAN,
+						  NULL,
+						  &indexpaths,
+						  NULL);
 		result = list_concat(result, indexpaths);
 	}
 

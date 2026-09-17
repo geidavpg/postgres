@@ -42,6 +42,55 @@ SELECT count(*) FROM bmscantest WHERE a = 1 AND b = 1;
 -- Test bitmap-or.
 SELECT count(*) FROM bmscantest WHERE a = 1 OR b = 1;
 
+-- Test parallel bitmap-and and bitmap-or.
+ALTER TABLE bmscantest SET (parallel_workers = 2);
+set min_parallel_table_scan_size = 0;
+set min_parallel_index_scan_size = 0;
+set parallel_setup_cost = 0;
+set parallel_tuple_cost = 0;
+set max_parallel_workers_per_gather = 2;
+set cpu_tuple_cost = 1;
+
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM bmscantest WHERE a = 1 AND b = 1;
+SELECT count(*) FROM bmscantest WHERE a = 1 AND b = 1;
+
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM bmscantest WHERE a = 1 OR b = 1;
+SELECT count(*) FROM bmscantest WHERE a = 1 OR b = 1;
+
+reset min_parallel_table_scan_size;
+reset min_parallel_index_scan_size;
+reset parallel_setup_cost;
+reset parallel_tuple_cost;
+reset max_parallel_workers_per_gather;
+reset cpu_tuple_cost;
 
 -- clean up
 DROP TABLE bmscantest;
+
+-- Test parallel bitmap heap scan with a non-parallel-aware index (GIN).
+-- The BitmapIndexScan node is parallel-aware, but only one worker can
+-- actually scan the GIN index; all workers still repartition the bitmap.
+CREATE TABLE bmgintest (a int, arr int[]) WITH (autovacuum_enabled = false);
+INSERT INTO bmgintest SELECT i, ARRAY[i % 100] FROM generate_series(1,100000) i;
+CREATE INDEX i_bmgintest ON bmgintest USING gin(arr);
+ANALYZE bmgintest;
+ALTER TABLE bmgintest SET (parallel_workers = 2);
+set min_parallel_table_scan_size = 0;
+set min_parallel_index_scan_size = 0;
+set parallel_setup_cost = 0;
+set parallel_tuple_cost = 0;
+set max_parallel_workers_per_gather = 2;
+
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM bmgintest WHERE arr @> ARRAY[5];
+SELECT count(*) FROM bmgintest WHERE arr @> ARRAY[5];
+
+reset min_parallel_table_scan_size;
+reset min_parallel_index_scan_size;
+reset parallel_setup_cost;
+reset parallel_tuple_cost;
+reset max_parallel_workers_per_gather;
+
+DROP TABLE bmgintest;
