@@ -545,8 +545,8 @@ END $$;
 set work_mem='64kB';  --set small work mem to force lossy pages
 explain (costs off)
 	select count(*) from tenk1, tenk2 where tenk1.hundred > 1 and tenk2.thousand=0;
-                         QUERY PLAN                         
-------------------------------------------------------------
+                             QUERY PLAN                              
+---------------------------------------------------------------------
  Aggregate
    ->  Nested Loop
          ->  Gather
@@ -558,7 +558,7 @@ explain (costs off)
                Workers Planned: 4
                ->  Parallel Bitmap Heap Scan on tenk1
                      Recheck Cond: (hundred > 1)
-                     ->  Bitmap Index Scan on tenk1_hundred
+                     ->  Parallel Bitmap Index Scan on tenk1_hundred
                            Index Cond: (hundred > 1)
 (13 rows)
 

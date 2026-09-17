@@ -522,7 +522,6 @@ typedef struct BitmapAnd
 typedef struct BitmapOr
 {
 	Plan		plan;
-	bool		isshared;
 	List	   *bitmapplans;
 } BitmapOr;
 
@@ -688,8 +687,6 @@ typedef struct BitmapIndexScan
 	Scan		scan;
 	/* OID of index to scan */
 	Oid			indexid;
-	/* Create shared bitmap if set */
-	bool		isshared;
 	/* list of index quals (OpExprs) */
 	List	   *indexqual;
 	/* the same in original form */

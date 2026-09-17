@@ -141,14 +141,13 @@ MultiExecBitmapOr(BitmapOrState *node)
 		 * tbm_union step for each child: just pass down the current result
 		 * bitmap and let the child OR directly into it.
 		 */
-		if (IsA(subnode, BitmapIndexScanState))
+		if (IsA(subnode, BitmapIndexScanState) &&
+			node->ps.state->es_query_dsa == NULL)
 		{
 			if (result == NULL) /* first subplan */
 			{
 				/* XXX should we use less than work_mem for this? */
-				result = tbm_create(work_mem * (Size) 1024,
-									((BitmapOr *) node->ps.plan)->isshared ?
-									node->ps.state->es_query_dsa : NULL);
+				result = tbm_create(work_mem * (Size) 1024, NULL);
 			}
 
 			((BitmapIndexScanState *) subnode)->biss_result = result;

@@ -128,7 +128,6 @@ static BitmapHeapScan *create_bitmap_scan_plan(PlannerInfo *root,
 											   List *tlist, List *scan_clauses);
 static Plan *create_bitmap_subplan(PlannerInfo *root, Path *bitmapqual,
 								   List **qual, List **indexqual, List **indexECs);
-static void bitmap_subplan_mark_shared(Plan *plan);
 static TidScan *create_tidscan_plan(PlannerInfo *root, TidPath *best_path,
 									List *tlist, List *scan_clauses);
 static TidRangeScan *create_tidrangescan_plan(PlannerInfo *root,
@@ -3067,9 +3066,6 @@ create_bitmap_scan_plan(PlannerInfo *root,
 										   &bitmapqualorig, &indexquals,
 										   &indexECs);
 
-	if (best_path->path.parallel_aware)
-		bitmap_subplan_mark_shared(bitmapqualplan);
-
 	/*
 	 * The qpqual list must contain all restrictions not automatically handled
 	 * by the index, other than pseudoconstant clauses which will be handled
@@ -3217,7 +3213,7 @@ create_bitmap_subplan(PlannerInfo *root, Path *bitmapqual,
 		plan->plan_rows =
 			clamp_row_est(apath->bitmapselectivity * apath->path.parent->tuples);
 		plan->plan_width = 0;	/* meaningless */
-		plan->parallel_aware = false;
+		plan->parallel_aware = apath->path.parallel_aware;
 		plan->parallel_safe = apath->path.parallel_safe;
 		*qual = subquals;
 		*indexqual = subindexquals;
@@ -3281,7 +3277,7 @@ create_bitmap_subplan(PlannerInfo *root, Path *bitmapqual,
 			plan->plan_rows =
 				clamp_row_est(opath->bitmapselectivity * opath->path.parent->tuples);
 			plan->plan_width = 0;	/* meaningless */
-			plan->parallel_aware = false;
+			plan->parallel_aware = opath->path.parallel_aware;
 			plan->parallel_safe = opath->path.parallel_safe;
 		}
 
@@ -3328,7 +3324,7 @@ create_bitmap_subplan(PlannerInfo *root, Path *bitmapqual,
 		plan->plan_rows =
 			clamp_row_est(ipath->indexselectivity * ipath->path.parent->tuples);
 		plan->plan_width = 0;	/* meaningless */
-		plan->parallel_aware = false;
+		plan->parallel_aware = ipath->path.parallel_aware;
 		plan->parallel_safe = ipath->path.parallel_safe;
 		/* Extract original index clauses, actual index quals, relevant ECs */
 		subquals = NIL;
@@ -5506,27 +5502,6 @@ label_incrementalsort_with_costsize(PlannerInfo *root, IncrementalSort *plan,
 	plan->sort.plan.plan_width = lefttree->plan_width;
 	plan->sort.plan.parallel_aware = false;
 	plan->sort.plan.parallel_safe = lefttree->parallel_safe;
-}
-
-/*
- * bitmap_subplan_mark_shared
- *	 Set isshared flag in bitmap subplan so that it will be created in
- *	 shared memory.
- */
-static void
-bitmap_subplan_mark_shared(Plan *plan)
-{
-	if (IsA(plan, BitmapAnd))
-		bitmap_subplan_mark_shared(linitial(((BitmapAnd *) plan)->bitmapplans));
-	else if (IsA(plan, BitmapOr))
-	{
-		((BitmapOr *) plan)->isshared = true;
-		bitmap_subplan_mark_shared(linitial(((BitmapOr *) plan)->bitmapplans));
-	}
-	else if (IsA(plan, BitmapIndexScan))
-		((BitmapIndexScan *) plan)->isshared = true;
-	else
-		elog(ERROR, "unrecognized node type: %d", nodeTag(plan));
 }
 
 /*****************************************************************************

@@ -4920,6 +4920,90 @@ remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel,
 }
 
 /*
+ * build_parallel_bitmapqual
+ *	  Build a parallel-aware version of a bitmap qualification tree by
+ *	  replacing each leaf IndexPath with a partial (parallel-aware) IndexPath.
+ *	  This is used to create the bitmap qual for a partial BitmapHeapPath so
+ *	  that each worker can build its own bitmap in parallel.
+ *
+ *	  If a leaf IndexPath cannot be turned into a parallel-aware path (e.g.
+ *	  because no workers can be assigned), this function returns NULL and the
+ *	  caller must not create a partial BitmapHeapPath from this bitmap qual.
+ */
+static Path *
+build_parallel_bitmapqual(PlannerInfo *root, RelOptInfo *rel, Path *path)
+{
+	if (IsA(path, IndexPath))
+	{
+		IndexPath  *ipath = (IndexPath *) path;
+		Relids		required_outer = PATH_REQ_OUTER((Path *) ipath);
+
+		/*
+		 * Partial bitmap heap paths are not parameterized, so loop_count is 1.
+		 */
+		ipath = (IndexPath *) create_index_path(root,
+												ipath->indexinfo,
+												ipath->indexclauses,
+												NIL,	/* no ordering for bitmap */
+												NIL,
+												NIL,	/* bitmap scans unordered */
+												ForwardScanDirection,
+												false,	/* never index-only */
+												required_outer,
+												1.0,
+												true);	/* partial path */
+
+		/*
+		 * If the path is not parallel-aware (no workers could be assigned),
+		 * the partial bitmap heap path must not be created.
+		 */
+		if (!ipath->path.parallel_aware)
+		{
+			pfree(ipath);
+			return NULL;
+		}
+
+		return (Path *) ipath;
+	}
+	else if (IsA(path, BitmapAndPath))
+	{
+		BitmapAndPath *apath = (BitmapAndPath *) path;
+		List	   *newquals = NIL;
+		ListCell   *lc;
+
+		foreach(lc, apath->bitmapquals)
+		{
+			Path		*sub = build_parallel_bitmapqual(root, rel,
+													 (Path *) lfirst(lc));
+
+			if (sub == NULL)
+				return NULL;
+			newquals = lappend(newquals, sub);
+		}
+		return (Path *) create_bitmap_and_path(root, rel, newquals);
+	}
+	else if (IsA(path, BitmapOrPath))
+	{
+		BitmapOrPath *opath = (BitmapOrPath *) path;
+		List	   *newquals = NIL;
+		ListCell   *lc;
+
+		foreach(lc, opath->bitmapquals)
+		{
+			Path		*sub = build_parallel_bitmapqual(root, rel,
+													 (Path *) lfirst(lc));
+
+			if (sub == NULL)
+				return NULL;
+			newquals = lappend(newquals, sub);
+		}
+		return (Path *) create_bitmap_or_path(root, rel, newquals);
+	}
+	else
+		elog(ERROR, "unrecognized node type: %d", nodeTag(path));
+}
+
+/*
  * create_partial_bitmap_paths
  *	  Build partial bitmap heap path for the relation
  */
@@ -4929,6 +5013,11 @@ create_partial_bitmap_paths(PlannerInfo *root, RelOptInfo *rel,
 {
 	int			parallel_workers;
 	double		pages_fetched;
+	Path	   *parbitmapqual;
+
+	/* A partial path cannot use a parameterized bitmap qual */
+	if (bitmapqual->param_info != NULL)
+		return;
 
 	/* Compute heap pages for bitmap heap scan */
 	pages_fetched = compute_bitmap_pages(root, rel, bitmapqual, 1.0,
@@ -4940,8 +5029,21 @@ create_partial_bitmap_paths(PlannerInfo *root, RelOptInfo *rel,
 	if (parallel_workers <= 0)
 		return;
 
+	/*
+	 * Build a parallel-aware version of the bitmapqual so that each worker
+	 * can run the bitmap index scan(s) in parallel.  The original non-parallel
+	 * bitmapqual is used by the regular BitmapHeapPath.
+	 */
+	parbitmapqual = build_parallel_bitmapqual(root, rel, bitmapqual);
+
+	if (parbitmapqual == NULL)
+		return;
+
 	add_partial_path(rel, (Path *) create_bitmap_heap_path(root, rel,
-														   bitmapqual, rel->lateral_relids, 1.0, parallel_workers));
+														   parbitmapqual,
+													   rel->lateral_relids,
+													   1.0,
+													   parallel_workers));
 }
 
 /*

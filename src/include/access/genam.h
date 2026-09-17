@@ -166,6 +166,12 @@ extern IndexScanDesc index_beginscan_bitmap(Relation indexRelation,
 											Snapshot snapshot,
 											IndexScanInstrumentation *instrument,
 											int nkeys);
+extern IndexScanDesc index_beginscan_bitmap_parallel(Relation indexRelation,
+												 Snapshot snapshot,
+												 IndexScanInstrumentation *instrument,
+												 int nkeys,
+												 ParallelIndexScanDesc pscan);
+extern bool index_am_supports_parallel_scan(Relation indexRelation);
 extern void index_rescan(IndexScanDesc scan,
 						 ScanKey keys, int nkeys,
 						 ScanKey orderbys, int norderbys);

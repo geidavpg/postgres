@@ -153,9 +153,10 @@ MultiExecBitmapAnd(BitmapAndState *node)
 		 * without evaluating the remaining subplans, since ANDing them can no
 		 * longer change the result.  (Note: the fact that indxpath.c orders
 		 * the subplans by selectivity should make this case more likely to
-		 * occur.)
+		 * occur.)  In a parallel query, however, all admitted participants must
+		 * execute every subplan so that they reach the later bitmap scan barriers.
 		 */
-		if (tbm_is_empty(result))
+		if (tbm_is_empty(result) && node->ps.state->es_query_dsa == NULL)
 			break;
 	}
 

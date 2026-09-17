@@ -45,7 +45,7 @@ typedef struct TableScanDescData
 	union
 	{
 		/* Iterator for Bitmap Table Scans */
-		TBMIterator rs_tbmiterator;
+		TBMOrderedIterator *rs_tbmiterator;
 
 		/*
 		 * Range of ItemPointers for table_scan_getnextslot_tidrange() to
