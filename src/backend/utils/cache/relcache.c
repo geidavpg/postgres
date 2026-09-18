@@ -1676,10 +1676,6 @@ LookupOpclassInfo(Oid operatorClassOid,
 		/* First time through: initialize the opclass cache */
 		HASHCTL		ctl;
 
-		/* Also make sure CacheMemoryContext exists */
-		if (!CacheMemoryContext)
-			CreateCacheMemoryContext();
-
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(OpClassCacheEnt);
 		OpClassCache = hash_create("Operator class cache", 64,
@@ -3565,9 +3561,6 @@ RelationBuildLocalRelation(const char *relname,
 	/*
 	 * switch to the cache context to create the relcache entry.
 	 */
-	if (!CacheMemoryContext)
-		CreateCacheMemoryContext();
-
 	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
 
 	/*
