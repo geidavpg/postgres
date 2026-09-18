@@ -138,6 +138,14 @@ typedef struct relidcacheent
 static HTAB *RelationIdCache;
 
 /*
+ * Slab memory context holding all the relcache's RelationData structs.
+ * It is a child of CacheMemoryContext; only the fixed-size RelationData
+ * objects are allocated there, while all subsidiary data stays in
+ * CacheMemoryContext itself.
+ */
+static MemoryContext RelationSlabContext = NULL;
+
+/*
  * This flag is false until we have prepared the critical relcache entries
  * that are needed to do indexscans on the tables read by relcache building.
  */
@@ -420,13 +428,16 @@ AllocateRelationDesc(Form_pg_class relp)
 	MemoryContext oldcxt;
 	Form_pg_class relationForm;
 
-	/* Relcache entries must live in CacheMemoryContext */
-	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
-
 	/*
-	 * allocate and zero space for new relation descriptor
+	 * Allocate and zero space for new relation descriptor.  The RelationData
+	 * struct goes into RelationSlabContext; all subsidiary data is allocated
+	 * in CacheMemoryContext.
 	 */
-	relation = palloc0_object(RelationData);
+	relation = MemoryContextAllocZero(RelationSlabContext,
+									  sizeof(RelationData));
+
+	/* Relcache subsidiary data must live in CacheMemoryContext */
+	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
 
 	/* make sure relation is marked as having no open file yet */
 	relation->rd_smgr = NULL;
@@ -1889,9 +1900,11 @@ formrdesc(const char *relationName, Oid relationReltype,
 	bool		has_not_null;
 
 	/*
-	 * allocate new relation desc, clear all fields of reldesc
+	 * allocate new relation desc, clear all fields of reldesc; the
+	 * RelationData struct itself goes into RelationSlabContext
 	 */
-	relation = palloc0_object(RelationData);
+	relation = MemoryContextAllocZero(RelationSlabContext,
+									  sizeof(RelationData));
 
 	/* make sure relation is marked as having no open file yet */
 	relation->rd_smgr = NULL;
@@ -3571,9 +3584,11 @@ RelationBuildLocalRelation(const char *relname,
 	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
 
 	/*
-	 * allocate a new relation descriptor and fill in basic state fields.
+	 * allocate a new relation descriptor and fill in basic state fields; the
+	 * RelationData struct itself goes into RelationSlabContext
 	 */
-	rel = palloc0_object(RelationData);
+	rel = MemoryContextAllocZero(RelationSlabContext,
+								 sizeof(RelationData));
 
 	/* make sure relation is marked as having no open file yet */
 	rel->rd_smgr = NULL;
@@ -4005,6 +4020,14 @@ RelationCacheInitialize(void)
 	 */
 	if (!CacheMemoryContext)
 		CreateCacheMemoryContext();
+
+	/*
+	 * create the slab context holding the relcache's RelationData structs
+	 */
+	RelationSlabContext = SlabContextCreate(CacheMemoryContext,
+											"RelationSlabContext",
+											SLAB_DEFAULT_BLOCK_SIZE,
+											sizeof(RelationData));
 
 	/*
 	 * create hashtable that indexes the relcache
@@ -6257,7 +6280,8 @@ load_relcache_init_file(bool shared)
 			rels = repalloc_array(rels, Relation, max_rels);
 		}
 
-		rel = rels[num_rels++] = (Relation) palloc(len);
+		rel = rels[num_rels++] = (Relation)
+			MemoryContextAlloc(RelationSlabContext, len);
 
 		/* then, read the Relation structure */
 		if (fread(rel, 1, len, fp) != len)
