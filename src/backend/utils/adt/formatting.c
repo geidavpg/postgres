@@ -1625,6 +1625,11 @@ str_tolower(const char *buff, size_t nbytes, Oid collid)
 {
 	char	   *result;
 	pg_locale_t mylocale;
+	const char *src = buff;
+	size_t		srclen = nbytes;
+	size_t		dstsize;
+	char	   *dst;
+	size_t		needed;
 
 	if (!buff)
 		return NULL;
@@ -1644,36 +1649,22 @@ str_tolower(const char *buff, size_t nbytes, Oid collid)
 
 	mylocale = pg_newlocale_from_collation(collid);
 
-	/* C/POSIX collations use this path regardless of database encoding */
-	if (mylocale->ctype_is_c)
-	{
-		result = asc_tolower(buff, nbytes);
-	}
-	else
-	{
-		const char *src = buff;
-		size_t		srclen = nbytes;
-		size_t		dstsize;
-		char	   *dst;
-		size_t		needed;
+	/* first try buffer of equal size plus terminating NUL */
+	dstsize = srclen + 1;
+	dst = palloc(dstsize);
 
-		/* first try buffer of equal size plus terminating NUL */
-		dstsize = srclen + 1;
-		dst = palloc(dstsize);
-
+	needed = pg_strlower(dst, dstsize, src, srclen, mylocale);
+	if (needed + 1 > dstsize)
+	{
+		/* grow buffer if needed and retry */
+		dstsize = needed + 1;
+		dst = repalloc(dst, dstsize);
 		needed = pg_strlower(dst, dstsize, src, srclen, mylocale);
-		if (needed + 1 > dstsize)
-		{
-			/* grow buffer if needed and retry */
-			dstsize = needed + 1;
-			dst = repalloc(dst, dstsize);
-			needed = pg_strlower(dst, dstsize, src, srclen, mylocale);
-			Assert(needed + 1 <= dstsize);
-		}
-
-		Assert(dst[needed] == '\0');
-		result = dst;
+		Assert(needed + 1 <= dstsize);
 	}
+
+	Assert(dst[needed] == '\0');
+	result = dst;
 
 	return result;
 }

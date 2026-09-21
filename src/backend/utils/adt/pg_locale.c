@@ -1342,6 +1342,8 @@ pg_strlower(char *dst, size_t dstsize, const char *src, size_t srclen,
 {
 	size_t		result;
 
+	Assert((locale->ctype == NULL) == locale->ctype_is_c);
+
 	if (locale->ctype == NULL)
 		result = strlower_c(dst, dstsize, src, srclen);
 	else

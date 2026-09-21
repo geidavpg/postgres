@@ -13,6 +13,7 @@
 
 #include <limits.h>
 #include <wctype.h>
+#include <wchar.h>
 
 #include "access/htup_details.h"
 #include "catalog/pg_database.h"
@@ -562,19 +563,25 @@ strlower_libc_mb(char *dest, size_t destsize, const char *src, size_t srclen,
 	 * Make result large enough; case change might change number of bytes
 	 */
 	max_size = curr_char * pg_database_encoding_max_length();
-	result = palloc(max_size + 1);
 
-	result_size = wchar2char(result, workspace, max_size + 1, loc);
-
-	if (destsize >= result_size + 1)
+	if (destsize >= max_size)
+		result_size = wchar2char(dest, workspace, destsize, loc);
+	else
 	{
-		memcpy(dest, result, result_size);
-		dest[result_size] = '\0';
+		result = palloc(max_size + 1);
+
+		result_size = wchar2char(result, workspace, max_size + 1, loc);
+
+		if (destsize >= result_size + 1)
+		{
+			memcpy(dest, result, result_size);
+			dest[result_size] = '\0';
+		}
+
+		pfree(result);
 	}
 
 	pfree(workspace);
-	pfree(result);
-
 	return result_size;
 }
 
@@ -1277,8 +1284,11 @@ wchar2char(char *to, const wchar_t *from, size_t tolen, locale_t loc)
 #endif							/* WIN32 */
 	if (loc == (locale_t) 0)
 	{
+    	mbstate_t state = {0};
+    	result = wcsrtombs(to, &from, tolen, &state);
+
 		/* Use wcstombs directly for the default locale */
-		result = wcstombs(to, from, tolen);
+		//result = wcstombs(to, from, tolen);
 	}
 	else
 	{
@@ -1332,6 +1342,7 @@ char2wchar(wchar_t *to, size_t tolen, const char *from, size_t fromlen,
 	else
 #endif							/* WIN32 */
 	{
+#if 0
 		/* mbstowcs requires ending '\0' */
 		char	   *str = pnstrdup(from, fromlen);
 
@@ -1347,6 +1358,30 @@ char2wchar(wchar_t *to, size_t tolen, const char *from, size_t fromlen,
 		}
 
 		pfree(str);
+#else
+		const char *src_ptr = from;
+		mbstate_t st = {0};
+
+		if (loc == (locale_t) 0)
+		{
+			/* Use mbsnrtowcs directly for the default locale */
+			result = mbsnrtowcs(to, &src_ptr, fromlen, tolen - 1, &st);
+		}
+		else
+		{
+			/* For nondefault locales, we need to use mbstowcs_l via uselocale */
+			locale_t	save_locale = uselocale(loc);
+			result = mbsnrtowcs(to, &src_ptr, fromlen, tolen - 1, &st);
+			uselocale(save_locale);
+		}
+
+		if (result != (size_t) -1)
+		{
+			Assert(result < tolen);
+			/* Append trailing null wchar (mbsnrtowcs() does not) */
+			to[result] = 0;
+		}
+#endif
 	}
 
 	if (result == -1)

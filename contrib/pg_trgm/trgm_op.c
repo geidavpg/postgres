@@ -521,13 +521,14 @@ done:
 static void
 generate_trgm_only(growable_trgm_array *dst, char *str, int slen, TrgmBound **bounds_p)
 {
-	size_t		buflen;
-	char	   *buf;
+	size_t		buflen = 0;
+	char	   *buf = NULL;
 	int			bytelen;
 	char	   *bword,
 			   *eword;
 	TrgmBound  *bounds = NULL;
 	int			bounds_allocated = 0;
+	pg_locale_t mylocale;
 
 	init_trgm_array(dst, slen);
 
@@ -544,52 +545,33 @@ generate_trgm_only(growable_trgm_array *dst, char *str, int slen, TrgmBound **bo
 	if (slen + LPADDING + RPADDING < 3 || slen == 0)
 		return;
 
-	/*
-	 * Allocate a buffer for case-folded, blank-padded words.
-	 *
-	 * As an initial guess, allocate a buffer large enough to hold the
-	 * original string with padding, which is always enough when compiled with
-	 * !IGNORECASE.  If the case-folding produces a string longer than the
-	 * original, we'll grow the buffer.
-	 */
-	buflen = (size_t) slen + 4;
-	buf = (char *) palloc(buflen);
-	if (LPADDING > 0)
-	{
-		*buf = ' ';
-		if (LPADDING > 1)
-			*(buf + 1) = ' ';
-	}
-
+	mylocale = pg_newlocale_from_collation(DEFAULT_COLLATION_OID);
 	eword = str;
+
 	while ((bword = find_word(eword, slen - (eword - str), &eword)) != NULL)
 	{
 		int			oldlen;
 
 		/* Convert word to lower case before extracting trigrams from it */
 #ifdef IGNORECASE
+		if ((eword - bword) * 4 + 1 > buflen)
 		{
-			char	   *lowered;
+			buflen = (eword - bword) * 4 + 1;
 
-			lowered = str_tolower(bword, eword - bword, DEFAULT_COLLATION_OID);
-			bytelen = strlen(lowered);
-
-			/* grow the buffer if necessary */
-			if (bytelen > buflen - 4)
-			{
+			if (buf)
 				pfree(buf);
-				buflen = (size_t) bytelen + 4;
-				buf = (char *) palloc(buflen);
-				if (LPADDING > 0)
-				{
-					*buf = ' ';
-					if (LPADDING > 1)
-						*(buf + 1) = ' ';
-				}
+			buf = palloc_array(char, buflen);
+
+			if (LPADDING > 0)
+			{
+				*buf = ' ';
+				if (LPADDING > 1)
+					*(buf + 1) = ' ';
 			}
-			memcpy(buf + LPADDING, lowered, bytelen);
-			pfree(lowered);
 		}
+
+		bytelen = pg_strlower(buf, buflen, bword, eword - bword, mylocale);
+		Assert(bytelen < buflen);
 #else
 		bytelen = eword - bword;
 		memcpy(buf + LPADDING, bword, bytelen);
@@ -614,7 +596,8 @@ generate_trgm_only(growable_trgm_array *dst, char *str, int slen, TrgmBound **bo
 		}
 	}
 
-	pfree(buf);
+	if (buf)
+		pfree(buf);
 }
 
 /*
