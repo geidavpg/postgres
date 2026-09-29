@@ -52,9 +52,7 @@ typedef struct Node Node;
  */
 #define NUMERIC_MIN_SIG_DIGITS		16
 
-/* The actual contents of Numeric are private to numeric.c */
-struct NumericData;
-typedef struct NumericData *Numeric;
+typedef struct varlena *Numeric;
 
 /*
  * fmgr interface macros
@@ -64,6 +62,12 @@ static inline Numeric
 DatumGetNumeric(Datum X)
 {
 	return (Numeric) PG_DETOAST_DATUM(X);
+}
+
+static inline Numeric
+DatumGetNumericPacked(Datum X)
+{
+	return (Numeric) PG_DETOAST_DATUM_PACKED(X);
 }
 
 static inline Numeric
@@ -79,6 +83,7 @@ NumericGetDatum(Numeric X)
 }
 
 #define PG_GETARG_NUMERIC(n)	  DatumGetNumeric(PG_GETARG_DATUM(n))
+#define PG_GETARG_NUMERIC_PACKED(n) DatumGetNumericPacked(PG_GETARG_DATUM(n))
 #define PG_GETARG_NUMERIC_COPY(n) DatumGetNumericCopy(PG_GETARG_DATUM(n))
 #define PG_RETURN_NUMERIC(x)	  return NumericGetDatum(x)
 
