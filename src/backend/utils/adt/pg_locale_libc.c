@@ -13,6 +13,7 @@
 
 #include <limits.h>
 #include <wctype.h>
+#include <wchar.h>
 
 #include "access/htup_details.h"
 #include "catalog/pg_database.h"
@@ -1332,21 +1333,28 @@ char2wchar(wchar_t *to, size_t tolen, const char *from, size_t fromlen,
 	else
 #endif							/* WIN32 */
 	{
-		/* mbstowcs requires ending '\0' */
-		char	   *str = pnstrdup(from, fromlen);
+		const char *src_ptr = from;
+		mbstate_t st = {0};
 
 		if (loc == (locale_t) 0)
 		{
-			/* Use mbstowcs directly for the default locale */
-			result = mbstowcs(to, str, tolen);
+			/* Use mbsnrtowcs directly for the default locale */
+			result = mbsnrtowcs(to, &src_ptr, fromlen, tolen - 1, &st);
 		}
 		else
 		{
-			/* Use mbstowcs_l for nondefault locales */
-			result = mbstowcs_l(to, str, tolen, loc);
+			/* For nondefault locales, we need to use mbsnrtowcs via uselocale */
+			locale_t	save_locale = uselocale(loc);
+			result = mbsnrtowcs(to, &src_ptr, fromlen, tolen - 1, &st);
+			uselocale(save_locale);
 		}
 
-		pfree(str);
+		if (result != (size_t) -1)
+		{
+			Assert(result < tolen);
+			/* Append trailing null wchar (mbsnrtowcs() does not) */
+			to[result] = 0;
+		}
 	}
 
 	if (result == -1)
