@@ -1872,7 +1872,7 @@ AC_CHECK_FUNCS(m4_normalize([
 	inet_pton
 	kqueue
 	localeconv_l
-	mbstowcs_l
+	mbsnrtowcs
 	memset_explicit
 	posix_fallocate
 	ppoll

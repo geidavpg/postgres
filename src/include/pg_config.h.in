@@ -282,8 +282,8 @@
 /* Define to 1 if you have the `localeconv_l' function. */
 #undef HAVE_LOCALECONV_L
 
-/* Define to 1 if you have the `mbstowcs_l' function. */
-#undef HAVE_MBSTOWCS_L
+/* Define to 1 if you have the `mbsnrtowcs' function. */
+#undef HAVE_MBSNRTOWCS
 
 /* Define to 1 if you have the <memory.h> header file. */
 #undef HAVE_MEMORY_H

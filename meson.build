@@ -3216,7 +3216,7 @@ func_checks = [
   ['inet_pton'],
   ['kqueue'],
   ['localeconv_l'],
-  ['mbstowcs_l'],
+  ['mbsnrtowcs'],
   ['memset_explicit'],
   ['mkdtemp'],
   ['posix_fadvise'],

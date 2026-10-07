@@ -13,6 +13,7 @@
 
 #include <limits.h>
 #include <wctype.h>
+#include <wchar.h>
 
 #include "access/htup_details.h"
 #include "catalog/pg_database.h"
@@ -1199,22 +1200,6 @@ report_newlocale_failure(const char *localename)
  * POSIX doesn't define _l-variants of these functions, but several systems
  * have them.  We provide our own replacements here.
  */
-#ifndef HAVE_MBSTOWCS_L
-static size_t
-mbstowcs_l(wchar_t *dest, const char *src, size_t n, locale_t loc)
-{
-#ifdef WIN32
-	return _mbstowcs_l(dest, src, n, loc);
-#else
-	size_t		result;
-	locale_t	save_locale = uselocale(loc);
-
-	result = mbstowcs(dest, src, n);
-	uselocale(save_locale);
-	return result;
-#endif
-}
-#endif
 #ifndef HAVE_WCSTOMBS_L
 static size_t
 wcstombs_l(char *dest, const wchar_t *src, size_t n, locale_t loc)
@@ -1231,6 +1216,79 @@ wcstombs_l(char *dest, const wchar_t *src, size_t n, locale_t loc)
 #endif
 }
 #endif
+
+/*
+ * Convert at most src_bytes bytes as if followed by a terminating NUL.
+ *
+ * dst must not be NULL.  dst_capacity is measured in wchar_t elements.
+ * Return the number of wide characters written, excluding the terminating
+ * NUL, or (size_t) -1 on an encoding error, with errno set to EILSEQ.
+ *
+ * Like mbstowcs(), stop when the destination fills, without appending a
+ * terminator or checking any remaining input.
+ */
+static size_t
+fast_mbstowcs(wchar_t *dst, const char *src, size_t src_bytes,
+			  size_t dst_capacity)
+{
+#ifdef HAVE_MBSNRTOWCS
+	mbstate_t	state = {0};
+	const char *p = src;
+	size_t		n = mbsnrtowcs(dst, &p, src_bytes, dst_capacity, &state);
+
+	/* Stop on error, a converted input NUL, or a full destination. */
+	if (n == (size_t) -1 || p == NULL || n == dst_capacity)
+		return n;
+
+	/*
+	 * The byte limit was reached. An incomplete trailing character may
+	 * have been consumed into state without producing a wide character.
+	 * Treat it as invalid, just as if followed by an input NUL.
+	 */
+	if (!mbsinit(&state))
+	{
+		wchar_t wc;
+
+		/*
+		 * In stateful locales, complete characters can leave a noninitial
+		 * shift state. Convert the implicit NUL to distinguish that from
+		 * an incomplete trailing character, rather than rejecting both.
+		 */
+		if (mbrtowc(&wc, "", 1, &state) != 0)
+		{
+			errno = EILSEQ;
+			return (size_t) -1;
+		}
+	}
+
+	/* Supply the output terminator for the implicit input NUL. */
+	dst[n] = L'\0';
+	return n;
+#else
+	char	*str = pnstrdup(src, src_bytes);
+	size_t	n = mbstowcs(dst, str, dst_capacity);
+
+	pfree(str);
+	return n;
+#endif
+}
+
+static size_t
+fast_mbstowcs_l(wchar_t *dst, const char *src, size_t src_bytes,
+				size_t dst_capacity, locale_t loc)
+{
+	size_t result;
+#ifdef WIN32
+	char *str = pnstrdup(src, src_bytes);
+	result = _mbstowcs_l(dst, str, dst_capacity, loc);
+	pfree(str);
+#else
+	locale_t save_locale = uselocale(loc);
+	result = fast_mbstowcs(dst, src, src_bytes, dst_capacity);
+	uselocale(save_locale);
+#endif
+	return result;
+}
 
 /*
  * These functions convert from/to libc's wchar_t, *not* pg_wchar.
@@ -1332,21 +1390,16 @@ char2wchar(wchar_t *to, size_t tolen, const char *from, size_t fromlen,
 	else
 #endif							/* WIN32 */
 	{
-		/* mbstowcs requires ending '\0' */
-		char	   *str = pnstrdup(from, fromlen);
-
 		if (loc == (locale_t) 0)
 		{
-			/* Use mbstowcs directly for the default locale */
-			result = mbstowcs(to, str, tolen);
+			/* Use fast_mbstowcs directly for the default locale */
+			result = fast_mbstowcs(to, from, fromlen, tolen - 1);
 		}
 		else
 		{
-			/* Use mbstowcs_l for nondefault locales */
-			result = mbstowcs_l(to, str, tolen, loc);
+			/* Use fast_mbstowcs_l for nondefault locales */
+			result = fast_mbstowcs_l(to, from, fromlen, tolen - 1, loc);
 		}
-
-		pfree(str);
 	}
 
 	if (result == -1)
