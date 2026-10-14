@@ -294,14 +294,14 @@ ST_SORT(ST_ELEMENT_TYPE * data, size_t n
 		ST_SORT_PROTO_COMPARE
 		ST_SORT_PROTO_ARG)
 {
-	ST_POINTER_TYPE *a = (ST_POINTER_TYPE *) data,
-			   *pa,
-			   *pb,
-			   *pc,
-			   *pd,
-			   *pl,
-			   *pm,
-			   *pn;
+	ST_POINTER_TYPE *a = (ST_POINTER_TYPE *) data;
+	ST_POINTER_TYPE *pa;
+	ST_POINTER_TYPE *pb;
+	ST_POINTER_TYPE *pc;
+	ST_POINTER_TYPE *pd;
+	ST_POINTER_TYPE *pl;
+	ST_POINTER_TYPE *pm;
+	ST_POINTER_TYPE *pn;
 	size_t		d1,
 				d2;
 	int			r,
