@@ -54,6 +54,19 @@ typedef LockInfoData *LockInfo;
 
 typedef struct RelationData
 {
+	union
+	{
+		struct
+		{
+			int Foo;
+		};
+
+		struct
+		{
+			long Bar;
+		};
+	};
+
 	RelFileLocator rd_locator;	/* relation physical identifier */
 	SMgrRelation rd_smgr;		/* cached file handle, or NULL */
 	int			rd_refcnt;		/* reference count */
