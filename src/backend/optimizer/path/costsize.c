@@ -1776,6 +1776,16 @@ cost_ctescan(Path *path, PlannerInfo *root,
 	startup_cost += path->pathtarget->cost.startup;
 	run_cost += path->pathtarget->cost.per_tuple * path->rows;
 
+	/* Adjust costing for parallelism, if used. */
+	if (path->parallel_workers > 0)
+	{
+		double		parallel_divisor = get_parallel_divisor(path);
+
+		/* The scan cost is divided among all the workers. */
+		run_cost /= parallel_divisor;
+		path->rows = clamp_row_est(path->rows / parallel_divisor);
+	}
+
 	if (path->parallel_workers == 0)
 		enable_mask |= PGS_CONSIDER_NONPARTIAL;
 	path->disabled_nodes =

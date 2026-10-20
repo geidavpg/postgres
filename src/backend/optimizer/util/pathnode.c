@@ -2017,7 +2017,8 @@ create_valuesscan_path(PlannerInfo *root, RelOptInfo *rel,
  */
 Path *
 create_ctescan_path(PlannerInfo *root, RelOptInfo *rel,
-					List *pathkeys, Relids required_outer)
+					List *pathkeys, Relids required_outer,
+					int parallel_workers)
 {
 	Path	   *pathnode = makeNode(Path);
 
@@ -2026,9 +2027,9 @@ create_ctescan_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->pathtarget = rel->reltarget;
 	pathnode->param_info = get_baserel_parampathinfo(root, rel,
 													 required_outer);
-	pathnode->parallel_aware = false;
+	pathnode->parallel_aware = (parallel_workers > 0);
 	pathnode->parallel_safe = rel->consider_parallel;
-	pathnode->parallel_workers = 0;
+	pathnode->parallel_workers = parallel_workers;
 	pathnode->pathkeys = pathkeys;
 
 	cost_ctescan(pathnode, root, rel, pathnode->param_info);

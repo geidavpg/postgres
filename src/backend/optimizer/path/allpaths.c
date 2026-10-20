@@ -141,6 +141,7 @@ static void set_values_pathlist(PlannerInfo *root, RelOptInfo *rel,
 								RangeTblEntry *rte);
 static void set_tablefunc_pathlist(PlannerInfo *root, RelOptInfo *rel,
 								   RangeTblEntry *rte);
+static int	find_cte_plan_id(PlannerInfo *root, RangeTblEntry *rte);
 static void set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel,
 							 RangeTblEntry *rte);
 static void set_namedtuplestore_pathlist(PlannerInfo *root, RelOptInfo *rel,
@@ -772,13 +773,31 @@ set_rel_consider_parallel(PlannerInfo *root, RelOptInfo *rel,
 		case RTE_CTE:
 
 			/*
-			 * CTE tuplestores aren't shared among parallel workers, so we
-			 * force all CTE scans to happen in the leader.  Also, populating
-			 * the CTE would require executing a subplan that's not available
-			 * in the worker, might be parallel-restricted, and must get
-			 * executed only once.
+			 * Self-references to a recursive CTE are worktable scans, which
+			 * can't be done in workers.
 			 */
-			return;
+			if (rte->self_reference)
+				return;
+
+			/*
+			 * A CTE scan can run in a worker only if the CTE was planned as
+			 * a partial plan, so that each participant can produce a
+			 * disjoint share of the CTE result into a shared tuplestore.
+			 * The executor doesn't support that yet for serial subplans,
+			 * and a CTE that couldn't be parallelized must still be scanned
+			 * only in the leader.
+			 */
+			{
+				int			plan_id = find_cte_plan_id(root, rte);
+				Plan	   *subplan;
+
+				if (plan_id <= 0)
+					return;
+				subplan = (Plan *) list_nth(root->glob->subplans, plan_id - 1);
+				if (subplan == NULL || !subplan->parallel_safe)
+					return;
+			}
+			break;
 
 		case RTE_NAMEDTUPLESTORE:
 
@@ -3043,28 +3062,22 @@ set_tablefunc_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 }
 
 /*
- * set_cte_pathlist
- *		Build the (single) access path for a non-self-reference CTE RTE
- *
- * There's no need for a separate set_cte_size phase, since we don't
- * support join-qual-parameterized paths for CTEs.
+ * find_cte_plan_id
+ *		Locate the subplan ID previously made for the referenced CTE RTE,
+ *		or -1 if there is none yet (ie, this is a side-reference from a
+ *		still-being-planned CTE, or the CTE was inlined away).
  */
-static void
-set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+static int
+find_cte_plan_id(PlannerInfo *root, RangeTblEntry *rte)
 {
-	Path	   *ctepath;
-	Plan	   *cteplan;
 	PlannerInfo *cteroot;
 	Index		levelsup;
-	List	   *pathkeys;
-	int			ndx;
 	ListCell   *lc;
+	int			ndx;
 	int			plan_id;
-	Relids		required_outer;
 
 	/*
-	 * Find the referenced CTE, and locate the path and plan previously made
-	 * for it.
+	 * Find the referenced CTE, and locate the plan previously made for it.
 	 */
 	levelsup = rte->ctelevelsup;
 	cteroot = root;
@@ -3092,8 +3105,33 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	if (lc == NULL)				/* shouldn't happen */
 		elog(ERROR, "could not find CTE \"%s\"", rte->ctename);
 	if (ndx >= list_length(cteroot->cte_plan_ids))
-		elog(ERROR, "could not find plan for CTE \"%s\"", rte->ctename);
+		return -1;
 	plan_id = list_nth_int(cteroot->cte_plan_ids, ndx);
+
+	return plan_id;
+}
+
+/*
+ * set_cte_pathlist
+ *		Build the (single) access path for a non-self-reference CTE RTE
+ *
+ * There's no need for a separate set_cte_size phase, since we don't
+ * support join-qual-parameterized paths for CTEs.
+ */
+static void
+set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+{
+	Path	   *ctepath;
+	Plan	   *cteplan;
+	List	   *pathkeys;
+	int			plan_id;
+	Relids		required_outer;
+
+	/*
+	 * Find the referenced CTE, and locate the path and plan previously made
+	 * for it.
+	 */
+	plan_id = find_cte_plan_id(root, rte);
 	if (plan_id <= 0)
 		elog(ERROR, "no plan was made for CTE \"%s\"", rte->ctename);
 
@@ -3118,7 +3156,17 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	required_outer = rel->lateral_relids;
 
 	/* Generate appropriate path */
-	add_path(rel, create_ctescan_path(root, rel, pathkeys, required_outer));
+	add_path(rel, create_ctescan_path(root, rel, pathkeys, required_outer, 0));
+
+	/*
+	 * If the CTE was planned as a partial plan, generate a partial scan path
+	 * too.  Each participant then produces a disjoint share of the CTE into
+	 * a shared tuplestore, so no ordering can be promised.
+	 */
+	if (rel->consider_parallel && required_outer == NULL &&
+		ctepath->parallel_workers > 0)
+		add_partial_path(rel, create_ctescan_path(root, rel, NIL, NULL,
+												  ctepath->parallel_workers));
 }
 
 /*

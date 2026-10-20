@@ -995,7 +995,36 @@ SS_process_ctes(PlannerInfo *root)
 		final_rel = fetch_upper_rel(subroot, UPPERREL_FINAL, NULL);
 		best_path = final_rel->cheapest_total_path;
 
+		/*
+		 * If the CTE can be scanned in parallel workers, plan it as a
+		 * partial plan rather than a complete plan.  The stored subplan's
+		 * top node must not be a Gather/GatherMerge, so always choose from
+		 * the partial pathlist, never cheapest_total_path (which may be
+		 * Gather-rooted).  Each participant executes the same partial plan
+		 * to produce a disjoint share of the CTE; a serial consumer running
+		 * it as the sole participant still sees the full result.
+		 */
+		if (root->glob->parallelModeOK &&
+			cmdType == CMD_SELECT &&
+			!cte->cterecursive &&
+			final_rel->partial_pathlist != NIL)
+		{
+			best_path = (Path *) linitial(final_rel->partial_pathlist);
+			subroot->is_parallel_cte = true;
+		}
+
 		plan = create_plan(subroot, best_path);
+
+		/* The partial path must not have produced a Gather on top. */
+		Assert(nodeTag(plan) != T_Gather && nodeTag(plan) != T_GatherMerge);
+
+		/*
+		 * When we chose a partial path, plan_rows (and costs) reflect only a
+		 * single participant's share.  Scale the row estimate back up so
+		 * that CteScan row estimates use the full CTE size.
+		 */
+		if (best_path != final_rel->cheapest_total_path)
+			plan->plan_rows = final_rel->cheapest_total_path->rows;
 
 		/*
 		 * Make a SubPlan node for it.  This is just enough unlike
@@ -1014,10 +1043,10 @@ SS_process_ctes(PlannerInfo *root)
 		splan->unknownEqFalse = false;
 
 		/*
-		 * CTE scans are not considered for parallelism (cf
-		 * set_rel_consider_parallel).
+		 * The subplan may be executed in a parallel worker if it was planned
+		 * as a partial plan; a complete plan remains leader-only.
 		 */
-		splan->parallel_safe = false;
+		splan->parallel_safe = plan->parallel_safe;
 		splan->setParam = NIL;
 		splan->parParam = NIL;
 		splan->args = NIL;
@@ -2654,9 +2683,19 @@ finalize_plan(PlannerInfo *root, Plan *plan,
 	if (plan->parallel_aware)
 	{
 		if (gather_param < 0)
-			elog(ERROR, "parallel-aware plan node is not below a Gather");
-		context.paramids =
-			bms_add_member(context.paramids, gather_param);
+		{
+			/*
+			 * Parallel-aware nodes inside a parallelized CTE subplan are
+			 * not below a Gather; each participant executes the subplan to
+			 * produce its share of the CTE result, and rescan signalling is
+			 * handled at the CteScan level instead.
+			 */
+			if (!root->is_parallel_cte)
+				elog(ERROR, "parallel-aware plan node is not below a Gather");
+		}
+		else
+			context.paramids =
+				bms_add_member(context.paramids, gather_param);
 	}
 
 	/* Check additional node-type-specific fields */

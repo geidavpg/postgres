@@ -426,6 +426,14 @@ struct PlannerInfo
 	 */
 	List	   *cte_plan_ids;
 
+	/*
+	 * True for a CTE's subroot when the CTE was planned as a partial plan.
+	 * Such a subplan legitimately contains parallel-aware nodes with no
+	 * ancestral Gather, since each participant executes it to produce its
+	 * share of the CTE result.
+	 */
+	bool		is_parallel_cte;
+
 	/* List of Lists of Params for MULTIEXPR subquery outputs */
 	List	   *multiexpr_params;
 
