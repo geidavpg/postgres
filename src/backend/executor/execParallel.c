@@ -130,6 +130,7 @@ typedef struct ExecParallelInitializeDSMContext
 } ExecParallelInitializeDSMContext;
 
 /* Helper functions that run in the parallel leader. */
+static bool ExecParallelHasCTEWalker(PlanState *planstate, void *context);
 static char *ExecSerializePlan(Plan *plan, EState *estate);
 static bool ExecParallelEstimate(PlanState *planstate,
 								 ExecParallelEstimateContext *e);
@@ -144,6 +145,27 @@ static bool ExecParallelRetrieveInstrumentation(PlanState *planstate,
 
 /* Helper function that runs in the parallel worker. */
 static DestReceiver *ExecParallelGetReceiver(dsm_segment *seg, shm_toc *toc);
+
+bool
+ExecParallelHasCTE(PlanState *planstate)
+{
+	return ExecParallelHasCTEWalker(planstate, NULL);
+}
+
+static bool
+ExecParallelHasCTEWalker(PlanState *planstate, void *context)
+{
+	if (planstate == NULL)
+		return false;
+
+	if (IsA(planstate, CteScanState) && planstate->plan->parallel_aware)
+		return true;
+
+	if (IsA(planstate, GatherState) || IsA(planstate, GatherMergeState))
+		return false;
+
+	return planstate_tree_walker(planstate, ExecParallelHasCTEWalker, context);
+}
 
 /*
  * Create a serialized representation of the plan to be sent to each worker.

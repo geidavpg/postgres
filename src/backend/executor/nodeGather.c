@@ -211,7 +211,8 @@ ExecGather(PlanState *pstate)
 
 		/* Run plan locally if no workers or enabled and not single-copy. */
 		node->need_to_scan_locally = (node->nreaders == 0)
-			|| (!gather->single_copy && parallel_leader_participation);
+			|| (!gather->single_copy && parallel_leader_participation &&
+				!ExecParallelHasCTE(outerPlanState(node)));
 		node->initialized = true;
 	}
 
