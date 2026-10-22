@@ -29,6 +29,7 @@
 #include "executor/nodeAppend.h"
 #include "executor/nodeBitmapHeapscan.h"
 #include "executor/nodeBitmapIndexscan.h"
+#include "executor/nodeCtescan.h"
 #include "executor/nodeCustom.h"
 #include "executor/nodeForeignscan.h"
 #include "executor/nodeHash.h"
@@ -360,6 +361,10 @@ ExecParallelEstimate(PlanState *planstate, ExecParallelEstimateContext *e)
 			/* even when not parallel-aware, for EXPLAIN ANALYZE */
 			ExecMemoizeEstimate((MemoizeState *) planstate, e->pcxt);
 			break;
+		case T_CteScanState:
+			if (planstate->plan->parallel_aware)
+				ExecCteScanEstimate((CteScanState *) planstate, e->pcxt);
+			break;
 		default:
 			break;
 	}
@@ -608,6 +613,11 @@ ExecParallelInitializeDSM(PlanState *planstate,
 			/* even when not parallel-aware, for EXPLAIN ANALYZE */
 			ExecMemoizeInitializeDSM((MemoizeState *) planstate, d->pcxt);
 			break;
+		case T_CteScanState:
+			if (planstate->plan->parallel_aware)
+				ExecCteScanInitializeDSM((CteScanState *) planstate,
+										 d->pcxt);
+			break;
 		default:
 			break;
 	}
@@ -695,6 +705,7 @@ ExecInitParallelPlan(PlanState *planstate, EState *estate,
 	Size		dsa_minsize = dsa_minimum_size();
 	char	   *query_string;
 	int			query_len;
+	ListCell   *lc;
 
 	/*
 	 * Force any initplan outputs that we're going to pass to workers to be
@@ -777,6 +788,14 @@ ExecInitParallelPlan(PlanState *planstate, EState *estate,
 	e.pcxt = pcxt;
 	e.nnodes = 0;
 	ExecParallelEstimate(planstate, &e);
+
+	/*
+	 * Parallel CTE subplans live in es_subplanstates rather than below the
+	 * plan tree, so their parallel-aware nodes need the same chance to
+	 * estimate shared state.
+	 */
+	foreach(lc, estate->es_subplanstates)
+		ExecParallelEstimate((PlanState *) lfirst(lc), &e);
 
 	/* Estimate space for instrumentation, if required. */
 	if (estate->es_instrument)
@@ -942,6 +961,8 @@ ExecInitParallelPlan(PlanState *planstate, EState *estate,
 	/* Install our DSA area while initializing the plan. */
 	estate->es_query_dsa = pei->area;
 	ExecParallelInitializeDSM(planstate, &d);
+	foreach(lc, estate->es_subplanstates)
+		ExecParallelInitializeDSM((PlanState *) lfirst(lc), &d);
 	estate->es_query_dsa = NULL;
 
 	/*
@@ -993,6 +1014,7 @@ ExecParallelReinitialize(PlanState *planstate,
 {
 	EState	   *estate = planstate->state;
 	FixedParallelExecutorState *fpes;
+	ListCell   *lc;
 
 	/* Old workers must already be shut down */
 	Assert(pei->finished);
@@ -1029,6 +1051,8 @@ ExecParallelReinitialize(PlanState *planstate,
 	/* Traverse plan tree and let each child node reset associated state. */
 	estate->es_query_dsa = pei->area;
 	ExecParallelReInitializeDSM(planstate, pei->pcxt);
+	foreach(lc, planstate->state->es_subplanstates)
+		ExecParallelReInitializeDSM((PlanState *) lfirst(lc), pei->pcxt);
 	estate->es_query_dsa = NULL;
 }
 
@@ -1090,6 +1114,10 @@ ExecParallelReInitializeDSM(PlanState *planstate,
 			if (planstate->plan->parallel_aware)
 				ExecHashJoinReInitializeDSM((HashJoinState *) planstate,
 											pcxt);
+			break;
+		case T_CteScanState:
+			if (planstate->plan->parallel_aware)
+				ExecCteScanReInitializeDSM((CteScanState *) planstate, pcxt);
 			break;
 		case T_BitmapIndexScanState:
 		case T_HashState:
@@ -1506,6 +1534,11 @@ ExecParallelInitializeWorker(PlanState *planstate, ParallelWorkerContext *pwcxt)
 			/* even when not parallel-aware, for EXPLAIN ANALYZE */
 			ExecMemoizeInitializeWorker((MemoizeState *) planstate, pwcxt);
 			break;
+		case T_CteScanState:
+			if (planstate->plan->parallel_aware)
+				ExecCteScanInitializeWorker((CteScanState *) planstate,
+											pwcxt);
+			break;
 		default:
 			break;
 	}
@@ -1544,6 +1577,7 @@ ParallelQueryMain(dsm_segment *seg, shm_toc *toc)
 	void	   *area_space;
 	dsa_area   *area;
 	ParallelWorkerContext pwcxt;
+	ListCell   *lc;
 
 	/* Get fixed-size state. */
 	fpes = shm_toc_lookup(toc, PARALLEL_KEY_EXECUTOR_FIXED, false);
@@ -1583,6 +1617,8 @@ ParallelQueryMain(dsm_segment *seg, shm_toc *toc)
 	pwcxt.toc = toc;
 	pwcxt.seg = seg;
 	ExecParallelInitializeWorker(queryDesc->planstate, &pwcxt);
+	foreach(lc, queryDesc->estate->es_subplanstates)
+		ExecParallelInitializeWorker((PlanState *) lfirst(lc), &pwcxt);
 
 	/* Pass down any tuple bound */
 	ExecSetTupleBound(fpes->tuples_needed, queryDesc->planstate);

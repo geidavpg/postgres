@@ -2022,6 +2022,10 @@ typedef struct CteScanState
 	/* The remaining fields are only valid in the "leader" CteScanState */
 	Tuplestorestate *cte_table; /* rows already read from the CTE query */
 	bool		eof_cte;		/* reached end of CTE query? */
+	/* Shared tuple buffer for parallel-aware CteScan nodes */
+	struct SharedCteStore *shared;
+	int			shared_cursor;	/* this reference's cursor in shared store */
+	int			participant;	/* leader only: producer slot in shared store */
 } CteScanState;
 
 /* ----------------
