@@ -18,6 +18,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_crc.h"
+#include "optimizer/cost.h"
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_trgm",
@@ -320,13 +321,92 @@ trigram_radix_sort_and_unique(trgm *trg, size_t count, bool char_is_signed)
 	return count;
 }
 
+static void
+trigram_radix_sort_recurse(trgm *trg, size_t count, int base, bool char_is_signed)
+{
+	uint32_t freqs[256];
+	uint32_t starts[256];
+	uint32_t cur[256];
+	size_t	 i;
+	int		 k;
+
+	if (count < 64)
+	{
+		for (size_t i = 1; i < count; i++)
+		{
+			trgm		tmp;
+			size_t		j = i;
+
+			memcpy(tmp, trg[i], sizeof(trgm));
+
+			while (j > 0 && CMPTRGM_SIGNED(trg[j - 1], tmp) > 0)
+			{
+				memcpy(trg[j], trg[j - 1], sizeof(trgm));
+				j--;
+			}
+
+			memcpy(trg[j], tmp, sizeof(trgm));
+		}
+
+		return;
+	}
+
+	memset(freqs, 0, sizeof(freqs));
+	for (i = 0; i < count; i++)
+		freqs[radix_key(trg[i][base], char_is_signed)]++;
+
+	starts[0] = 0;
+	for (k = 1; k < 256; k++)
+		starts[k] = starts[k - 1] + freqs[k - 1];
+
+	memcpy(cur, starts, sizeof(cur));
+
+	for (i = 0; i < count; i++)
+	{
+		for (;;)
+		{
+			unsigned char b = radix_key(trg[i][base], char_is_signed);
+
+			if (i >= starts[b] && i < cur[b])
+				break;
+
+			{
+				size_t		j = cur[b]++;
+				trgm		tmp;
+
+				memcpy(tmp, trg[i], sizeof(trgm));
+				memcpy(trg[i], trg[j], sizeof(trgm));
+				memcpy(trg[j], tmp, sizeof(trgm));
+			}
+		}
+	}
+
+	for (k = 0; k < 256; k++)
+		if (freqs[k] > 1 && base < 2)
+			trigram_radix_sort_recurse(trg + starts[k], freqs[k], base + 1, char_is_signed);
+}
+
 static size_t
 trigram_sort_and_unique(trgm *array, size_t n)
+{
+if (enable_sort)
+{
+	if (GetDefaultCharSignedness())
+	{
+		trigram_radix_sort_recurse(array, n, 0, true);
+	}
+	else
+		trigram_radix_sort_recurse(array, n, 0, false);
+
+	return qunique(array, n, sizeof(trgm), CMPTRGM_EQ);
+}
+else
 {
 	if (GetDefaultCharSignedness())
 		return trigram_radix_sort_and_unique(array, n, true);
 	else
 		return trigram_radix_sort_and_unique(array, n, false);
+}
 }
 
 /*
