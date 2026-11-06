@@ -278,7 +278,19 @@ trigram_radix_sort_and_unique(trgm *trg, size_t count, bool char_is_signed)
 	trgm *starts[256];
 	trgm *from = trg;
 	trgm *to = buffer;
-	size_t freqs[256];
+	uint32_t freqs[3][256];
+
+	/*
+	* Compute frequencies to partition the buffer.
+	*/
+	memset(freqs, 0, sizeof(freqs));
+
+	for (size_t j = 0; j < count; j++)
+	{
+		freqs[0][radix_key(trg[j][0], char_is_signed)]++;
+		freqs[1][radix_key(trg[j][1], char_is_signed)]++;
+		freqs[2][radix_key(trg[j][2], char_is_signed)]++;
+	}
 
 	/*
 	 * Do the sorting. Start with last character because that's the "LSB"
@@ -289,18 +301,10 @@ trigram_radix_sort_and_unique(trgm *trg, size_t count, bool char_is_signed)
 		trgm *old_from = from;
 		trgm *next = to;
 
-		/*
-		* Compute frequencies to partition the buffer.
-		*/
-		memset(freqs, 0, sizeof(freqs));
-
-		for (size_t j = 0; j < count; j++)
-			freqs[radix_key(trg[j][i], char_is_signed)]++;
-
 		for (size_t j = 0; j < 256; j++)
 		{
 			starts[j] = next;
-			next += freqs[j];
+			next += freqs[i][j];
 		}
 
 		for (size_t j = 0; j < count; j++)
