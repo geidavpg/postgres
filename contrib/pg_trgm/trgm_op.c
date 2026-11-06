@@ -10,6 +10,7 @@
 #include "common/int.h"
 #include "lib/qunique.h"
 #include "miscadmin.h"
+#include "port/pg_bswap.h"
 #include "trgm.h"
 #include "tsearch/ts_locale.h"
 #include "utils/formatting.h"
@@ -185,8 +186,6 @@ _PG_init(void)
 	MarkGUCPrefixReserved("pg_trgm");
 }
 
-#define CMPCHAR(a,b) ( ((a)==(b)) ? 0 : ( ((a)<(b)) ? -1 : 1 ) )
-
 /*
  * Functions for comparing two trgms while treating each char as "signed char" or
  * "unsigned char".
@@ -194,21 +193,43 @@ _PG_init(void)
 static inline int
 CMPTRGM_SIGNED(const void *a, const void *b)
 {
-#define CMPPCHAR_S(a,b,i)  CMPCHAR( *(((const signed char*)(a))+i), *(((const signed char*)(b))+i) )
+	int32 ia, ib;
 
-	return CMPPCHAR_S(a, b, 0) ? CMPPCHAR_S(a, b, 0)
-		: (CMPPCHAR_S(a, b, 1) ? CMPPCHAR_S(a, b, 1)
-		   : CMPPCHAR_S(a, b, 2));
+	memcpy(&ia, a, 4);
+	memcpy(&ib, b, 4);
+
+	/* Swap on little-endian to put byte0 in MSB position */
+#ifndef WORDS_BIGENDIAN
+	ia = pg_bswap32(ia);
+	ib = pg_bswap32(ib);
+#endif
+
+	/* Arithmetic right shift by 8 to sign-extend the 24-bit value */
+	ia >>= 8;
+	ib >>= 8;
+
+	return (ia < ib) ? -1 : ((ia > ib) ? 1 : 0);
 }
 
 static inline int
 CMPTRGM_UNSIGNED(const void *a, const void *b)
 {
-#define CMPPCHAR_UNS(a,b,i)  CMPCHAR( *(((const unsigned char*)(a))+i), *(((const unsigned char*)(b))+i) )
+	uint32 ia, ib;
 
-	return CMPPCHAR_UNS(a, b, 0) ? CMPPCHAR_UNS(a, b, 0)
-		: (CMPPCHAR_UNS(a, b, 1) ? CMPPCHAR_UNS(a, b, 1)
-		   : CMPPCHAR_UNS(a, b, 2));
+	memcpy(&ia, a, 4);
+	memcpy(&ib, b, 4);
+
+	/* Swap on little-endian to put byte0 in MSB position */
+#ifndef WORDS_BIGENDIAN
+	ia = pg_bswap32(ia);
+	ib = pg_bswap32(ib);
+#endif
+
+	/* Mask off the 4th byte */
+	ia &= 0xFFFFFF00;
+	ib &= 0xFFFFFF00;
+
+	return (ia < ib) ? -1 : ((ia > ib) ? 1 : 0);
 }
 
 /*
