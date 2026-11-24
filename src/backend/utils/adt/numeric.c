@@ -467,6 +467,15 @@ static const int round_powers[4] = {0, 1000, 100, 10};
  * ----------
  */
 
+pg_always_inline
+NumericDigit
+read_digit(const NumericDigit *digits, size_t index)
+{
+	NumericDigit digit;
+	memcpy(&digit, digits + index, sizeof(digit));
+	return digit;
+}
+
 #ifdef NUMERIC_DEBUG
 static void dump_numeric(const char *str, Numeric num);
 static void dump_var(const char *str, NumericVar *var);
@@ -7256,39 +7265,60 @@ set_var_from_num(Numeric num, NumericVar *dest)
 inline static void
 init_var_from_num(const Numeric num, NumericVar *dest)
 {
-	uint16 header;
-	bool isHeaderShort;
-	const char *varData = VARDATA_ANY(num);
-	const int varSize = VARSIZE_ANY_EXHDR(num);
-
-	memcpy(&header, varData, sizeof(header));
-	isHeaderShort = ((header & 0x8000) != 0);
-
-	dest->buf = NULL; /* digits array is not palloc'd */
-
-	if (isHeaderShort)
-	{
-		dest->ndigits = ((varSize - sizeof(uint16)) / sizeof(NumericDigit));
-		dest->weight = (header & NUMERIC_SHORT_WEIGHT_SIGN_MASK ? ~NUMERIC_SHORT_WEIGHT_MASK : 0) | (header & NUMERIC_SHORT_WEIGHT_MASK);
-
-		dest->sign = (header & NUMERIC_SIGN_MASK) ==  NUMERIC_SHORT ? 
-			((header & NUMERIC_SHORT_SIGN_MASK) ? 
-			NUMERIC_NEG : NUMERIC_POS) : (header & NUMERIC_EXT_SIGN_MASK);
-
-		dest->dscale = (header & NUMERIC_SHORT_DSCALE_MASK) >> NUMERIC_SHORT_DSCALE_SHIFT;
-		dest->digits = (NumericDigit *)(varData + sizeof(header));
-	}
-	else
-	{
-		int16 weight;
-		memcpy(&weight, varData+sizeof(header), sizeof(weight));
-
-		dest->ndigits = ((varSize - sizeof(uint16) - sizeof(int16)) / sizeof(NumericDigit));
-		dest->weight = weight;
-		dest->sign = ((header & NUMERIC_SIGN_MASK) == NUMERIC_SPECIAL ? (header & NUMERIC_EXT_SIGN_MASK) : (header & NUMERIC_SIGN_MASK));
-		dest->dscale = header & NUMERIC_DSCALE_MASK;
-		dest->digits = (NumericDigit *)(varData + sizeof(header) + sizeof(weight));
-	}
+#if 0
+	dest->ndigits = NUMERIC_NDIGITS(num);
+	dest->weight = NUMERIC_WEIGHT(num);
+	dest->sign = NUMERIC_SIGN(num);
+	dest->dscale = NUMERIC_DSCALE(num);
+	dest->digits = NUMERIC_DIGITS(num);
+	dest->buf = NULL;			/* digits array is not palloc'd */
+#endif
+#if 1
+    uint16 header;
+    const char *varData;
+    int  varSize;
+    static const uint16_t numeric_sign_map[16] = {
+        0, 0, 0, 0, 0, 0, 0, 0,
+        NUMERIC_POS, NUMERIC_POS, NUMERIC_NEG, NUMERIC_NEG,
+        NUMERIC_NAN, NUMERIC_PINF, NUMERIC_SPECIAL | NUMERIC_SHORT_SIGN_MASK, NUMERIC_NINF
+    };
+ 
+    if (VARATT_IS_SHORT(num))
+    {
+        varData = VARDATA_SHORT(num);
+        varSize = VARSIZE_SHORT(num) - VARHDRSZ_SHORT;
+    }
+    else
+    {
+        varData = VARDATA(num);
+        varSize = VARSIZE(num) - VARHDRSZ;
+    }
+ 
+    memcpy(&header, varData, sizeof(header));
+    dest->buf = NULL; /* digits array is not palloc'd */
+ 
+    if ((header & NUMERIC_SHORT) != 0) /* Is short header NUMERIC? */
+    {
+        dest->ndigits = ((varSize - sizeof(uint16)) / sizeof(NumericDigit));
+		/* Decode the 7-bit two's-complement weight: low 6 bits minus sign bit. */
+        dest->weight = ((int16_t) (header << 9)) >> 9;
+		dest->sign = numeric_sign_map[header >> 12];
+        dest->dscale = (header & NUMERIC_SHORT_DSCALE_MASK) >> NUMERIC_SHORT_DSCALE_SHIFT;
+        dest->digits = (NumericDigit *) (varData + sizeof(header));
+    }
+    else
+    {
+        int16        weight;
+ 
+        memcpy(&weight, varData + sizeof(header), sizeof(weight));
+ 
+        dest->ndigits = ((varSize - sizeof(uint16) - sizeof(int16)) / sizeof(NumericDigit));
+        dest->weight = weight;
+        dest->sign = header & NUMERIC_SIGN_MASK;
+        dest->dscale = header & NUMERIC_DSCALE_MASK;
+        dest->digits = (NumericDigit *) (varData + sizeof(header) + sizeof(weight));
+    }
+#endif
 }
 
 
@@ -11508,13 +11538,13 @@ cmp_abs_common(const NumericDigit *var1digits, int var1ndigits, int var1weight,
 
 	while (var1weight > var2weight && i1 < var1ndigits)
 	{
-		if (var1digits[i1++] != 0)
+		if (read_digit(var1digits, i1++) != 0)
 			return 1;
 		var1weight--;
 	}
 	while (var2weight > var1weight && i2 < var2ndigits)
 	{
-		if (var2digits[i2++] != 0)
+		if (read_digit(var2digits, i2++) != 0)
 			return -1;
 		var2weight--;
 	}
@@ -11525,7 +11555,7 @@ cmp_abs_common(const NumericDigit *var1digits, int var1ndigits, int var1weight,
 	{
 		while (i1 < var1ndigits && i2 < var2ndigits)
 		{
-			int			stat = var1digits[i1++] - var2digits[i2++];
+			int	stat = read_digit(var1digits, i1++) - read_digit(var2digits, i2++);
 
 			if (stat)
 			{
@@ -11542,12 +11572,12 @@ cmp_abs_common(const NumericDigit *var1digits, int var1ndigits, int var1weight,
 	 */
 	while (i1 < var1ndigits)
 	{
-		if (var1digits[i1++] != 0)
+		if (read_digit(var1digits, i1++) != 0)
 			return 1;
 	}
 	while (i2 < var2ndigits)
 	{
-		if (var2digits[i2++] != 0)
+		if (read_digit(var2digits, i2++) != 0)
 			return -1;
 	}
 
